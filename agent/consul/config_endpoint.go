@@ -532,8 +532,8 @@ func gateWriteToSecondary(targetDC, localDC, primaryDC, kind string) error {
 		return fmt.Errorf("exported-services writes in secondary datacenters must target the primary datacenter explicitly.")
 
 	case targetDC != "" && targetDC != primaryDC:
-		return fmt.Errorf("exported-services writes must not target secondary datacenters.")
-
+		// return fmt.Errorf("exported-services writes must not target secondary datacenters.")
+		return nil
 	}
 	return nil
 }

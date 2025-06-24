@@ -100,9 +100,9 @@ func (s *Server) reconcileLocalConfig(ctx context.Context, configs []structs.Con
 	var merr error
 	for i, entry := range configs {
 		// Exported services only apply to the primary datacenter.
-		if entry.GetKind() == structs.ExportedServices {
-			continue
-		}
+		// if entry.GetKind() == structs.ExportedServices {
+		// 	continue
+		// }
 		req := structs.ConfigEntryRequest{
 			Op:         op,
 			Datacenter: s.config.Datacenter,

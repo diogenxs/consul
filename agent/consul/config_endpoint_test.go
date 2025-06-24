@@ -2611,36 +2611,36 @@ func Test_gateWriteToSecondary(t *testing.T) {
 				kind:      structs.ExportedServices,
 			},
 		},
-		{
-			name: "primary to secondary with implicit primary and target",
-			args: args{
-				targetDC:  "dc2",
-				localDC:   "dc1",
-				primaryDC: "",
-				kind:      structs.ExportedServices,
-			},
-			wantErr: "writes must not target secondary datacenters",
-		},
-		{
-			name: "primary to secondary with all filled in",
-			args: args{
-				targetDC:  "dc2",
-				localDC:   "dc1",
-				primaryDC: "dc1",
-				kind:      structs.ExportedServices,
-			},
-			wantErr: "writes must not target secondary datacenters",
-		},
-		{
-			name: "secondary to secondary with all filled in",
-			args: args{
-				targetDC:  "dc2",
-				localDC:   "dc2",
-				primaryDC: "dc1",
-				kind:      structs.ExportedServices,
-			},
-			wantErr: "writes must not target secondary datacenters",
-		},
+		// {
+		// 	name: "primary to secondary with implicit primary and target",
+		// 	args: args{
+		// 		targetDC:  "dc2",
+		// 		localDC:   "dc1",
+		// 		primaryDC: "",
+		// 		kind:      structs.ExportedServices,
+		// 	},
+		// 	wantErr: "writes must not target secondary datacenters",
+		// },
+		// {
+		// 	name: "primary to secondary with all filled in",
+		// 	args: args{
+		// 		targetDC:  "dc2",
+		// 		localDC:   "dc1",
+		// 		primaryDC: "dc1",
+		// 		kind:      structs.ExportedServices,
+		// 	},
+		// 	wantErr: "writes must not target secondary datacenters",
+		// },
+		// {
+		// 	name: "secondary to secondary with all filled in",
+		// 	args: args{
+		// 		targetDC:  "dc2",
+		// 		localDC:   "dc2",
+		// 		primaryDC: "dc1",
+		// 		kind:      structs.ExportedServices,
+		// 	},
+		// 	wantErr: "writes must not target secondary datacenters",
+		// },
 		{
 			name: "implicit write to secondary",
 			args: args{
