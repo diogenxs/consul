@@ -549,6 +549,7 @@ func (d *DNSServer) handleQuery(resp dns.ResponseWriter, req *dns.Msg) {
 
 	d.trimDNSResponse(cfg, network, req, m)
 
+	d.logger.Trace("query response", m.String())
 	if err := resp.WriteMsg(m); err != nil {
 		d.logger.Warn("failed to respond", "error", err)
 	}
@@ -1717,13 +1718,18 @@ func (d *DNSServer) encodeIPAsFqdn(questionName string, lookup serviceLookup, ip
 	if ipv4 != nil {
 		ipStr = ipStr[len(ipStr)-(net.IPv4len*2):]
 	}
-	if lookup.PeerName != "" {
+	d.logger.Trace("encodeIPAsFqdn", "peer", lookup.PeerName, "datacenter", lookup.Datacenter, "ip", ipStr, "question_name", questionName, "resp_domain", respDomain)
+	if lookup.PeerName != "" || lookup.Datacenter == "" {
 		// Exclude the datacenter from the FQDN on the addr for peers.
 		// This technically makes no difference, since the addr endpoint ignores the DC
 		// component of the request, but do it anyway for a less confusing experience.
-		return fmt.Sprintf("%s.addr.%s", ipStr, respDomain)
+		result := fmt.Sprintf("%s.addr.%s", ipStr, respDomain)
+		d.logger.Trace("encodeIPAsFqdn: using peer format (no datacenter)", "result", result, "reason", fmt.Sprintf("peer=%s, datacenter=%s", lookup.PeerName, lookup.Datacenter))
+		return result
 	}
-	return fmt.Sprintf("%s.addr.%s.%s", ipStr, lookup.Datacenter, respDomain)
+	result := fmt.Sprintf("%s.addr.%s.%s", ipStr, lookup.Datacenter, respDomain)
+	d.logger.Trace("encodeIPAsFqdn: using datacenter format", "result", result, "datacenter", lookup.Datacenter)
+	return result
 }
 
 func makeARecord(qType uint16, ip net.IP, ttl time.Duration) dns.RR {
@@ -1840,13 +1846,19 @@ func (d *DNSServer) makeRecordFromServiceNode(lookup serviceLookup, serviceNode 
 // Otherwise it will return a IN A record
 func (d *DNSServer) makeRecordFromIP(lookup serviceLookup, addr net.IP, serviceNode structs.CheckServiceNode, req *dns.Msg, ttl time.Duration) ([]dns.RR, []dns.RR) {
 	q := req.Question[0]
+	d.logger.Trace("makeRecordFromIP", "qtype", dns.Type(q.Qtype).String(), "question_name", q.Name, "addr", addr, "lookup_peer", lookup.PeerName, "lookup_dc", lookup.Datacenter, "service_port", serviceNode.Service.Port)
 	ipRecord := makeARecord(q.Qtype, addr, ttl)
 	if ipRecord == nil {
+		d.logger.Trace("makeRecordFromIP: failed to create IP record")
 		return nil, nil
 	}
 
 	if q.Qtype == dns.TypeSRV {
+		d.logger.Trace("makeRecordFromIP: creating SRV record")
 		ipFQDN := d.encodeIPAsFqdn(q.Name, lookup, addr)
+		d.logger.Trace("makeRecordFromIP: encoded IP as FQDN", "ipFQDN", ipFQDN)
+		translatedPort := d.agent.TranslateServicePort(lookup.Datacenter, serviceNode.Service.Port, serviceNode.Service.TaggedAddresses)
+		d.logger.Trace("makeRecordFromIP: translated port", "original_port", serviceNode.Service.Port, "translated_port", translatedPort, "lookup_dc", lookup.Datacenter)
 		answers := []dns.RR{
 			&dns.SRV{
 				Hdr: dns.RR_Header{
@@ -1857,16 +1869,18 @@ func (d *DNSServer) makeRecordFromIP(lookup serviceLookup, addr net.IP, serviceN
 				},
 				Priority: 1,
 				Weight:   uint16(findWeight(serviceNode)),
-				Port:     uint16(d.agent.TranslateServicePort(lookup.Datacenter, serviceNode.Service.Port, serviceNode.Service.TaggedAddresses)),
+				Port:     uint16(translatedPort),
 				Target:   ipFQDN,
 			},
 		}
 
 		ipRecord.Header().Name = ipFQDN
+		d.logger.Trace("makeRecordFromIP: created SRV record with target", "srv_target", ipFQDN, "srv_port", translatedPort)
 		return answers, []dns.RR{ipRecord}
 	}
 
 	ipRecord.Header().Name = q.Name
+	d.logger.Trace("makeRecordFromIP: created A/AAAA record", "record_name", q.Name)
 	return []dns.RR{ipRecord}, nil
 }
 
@@ -1929,6 +1943,7 @@ MORE_REC:
 }
 
 func (d *DNSServer) nodeServiceRecords(lookup serviceLookup, node structs.CheckServiceNode, req *dns.Msg, ttl time.Duration, cfg *dnsConfig, maxRecursionLevel int) ([]dns.RR, []dns.RR) {
+	d.logger.Trace("nodeServiceRecords", "qtype", dns.Type(req.Question[0].Qtype).String(), "node", node.Node.Node, "node_dc", node.Node.Datacenter, "service_peer", node.Service.PeerName, "lookup_peer", lookup.PeerName, "lookup_dc", lookup.Datacenter)
 	addrTranslate := TranslateAddressAcceptDomain
 	if req.Question[0].Qtype == dns.TypeA {
 		addrTranslate |= TranslateAddressAcceptIPv4
@@ -1937,45 +1952,57 @@ func (d *DNSServer) nodeServiceRecords(lookup serviceLookup, node structs.CheckS
 	} else {
 		addrTranslate |= TranslateAddressAcceptAny
 	}
+	d.logger.Trace("nodeServiceRecords address translation flags", "addrTranslate", addrTranslate)
 
 	// The datacenter should be empty during translation if it is a peering lookup.
 	// This should be fine because we should always prefer the WAN address.
+	d.logger.Trace("nodeServiceRecords before address translation", "service_addr_raw", node.Service.Address, "node_addr_raw", node.Node.Address, "lookup_dc_for_service_translation", lookup.Datacenter, "node_dc_for_node_translation", node.Node.Datacenter)
 	serviceAddr := d.agent.TranslateServiceAddress(lookup.Datacenter, node.Service.Address, node.Service.TaggedAddresses, addrTranslate)
 	nodeAddr := d.agent.TranslateAddress(node.Node.Datacenter, node.Node.Address, node.Node.TaggedAddresses, addrTranslate)
+	d.logger.Trace("nodeServiceRecords after address translation", "service_addr", serviceAddr, "node_addr", nodeAddr)
 	if serviceAddr == "" && nodeAddr == "" {
+		d.logger.Trace("nodeServiceRecords no addresses available, returning nil")
 		return nil, nil
 	}
 
 	nodeIPAddr := net.ParseIP(nodeAddr)
 	serviceIPAddr := net.ParseIP(serviceAddr)
+	d.logger.Trace("nodeServiceRecords parsed IPs", "node_ip", nodeIPAddr, "service_ip", serviceIPAddr)
 
 	// There is no service address and the node address is an IP
 	if serviceAddr == "" && nodeIPAddr != nil {
+		d.logger.Trace("nodeServiceRecords path: no service addr, node is IP", "node_addr_original", node.Node.Address, "node_addr_translated", nodeAddr)
 		if node.Node.Address != nodeAddr {
 			// Do not CNAME node address in case of WAN address
+			d.logger.Trace("nodeServiceRecords using makeRecordFromIP (WAN address case)", "ip", nodeIPAddr)
 			return d.makeRecordFromIP(lookup, nodeIPAddr, node, req, ttl)
 		}
 
+		d.logger.Trace("nodeServiceRecords using makeRecordFromServiceNode", "ip", nodeIPAddr)
 		return d.makeRecordFromServiceNode(lookup, node, nodeIPAddr, req, ttl)
 	}
 
 	// There is no service address and the node address is a FQDN (external service)
 	if serviceAddr == "" {
+		d.logger.Trace("nodeServiceRecords path: no service addr, node is FQDN", "node_fqdn", nodeAddr)
 		return d.makeRecordFromFQDN(lookup, nodeAddr, node, req, ttl, cfg, maxRecursionLevel)
 	}
 
 	// The service address is an IP
 	if serviceIPAddr != nil {
+		d.logger.Trace("nodeServiceRecords path: service addr is IP", "service_ip", serviceIPAddr)
 		return d.makeRecordFromIP(lookup, serviceIPAddr, node, req, ttl)
 	}
 
 	// If the service address is a CNAME for the service we are looking
 	// for then use the node address.
 	if dns.Fqdn(serviceAddr) == req.Question[0].Name && nodeIPAddr != nil {
+		d.logger.Trace("nodeServiceRecords path: service addr is CNAME match", "service_fqdn", dns.Fqdn(serviceAddr), "question_name", req.Question[0].Name, "node_ip", nodeIPAddr)
 		return d.makeRecordFromServiceNode(lookup, node, nodeIPAddr, req, ttl)
 	}
 
 	// The service address is a FQDN (external service)
+	d.logger.Trace("nodeServiceRecords path: service addr is FQDN", "service_fqdn", serviceAddr)
 	return d.makeRecordFromFQDN(lookup, serviceAddr, node, req, ttl, cfg, maxRecursionLevel)
 }
 
@@ -2000,13 +2027,16 @@ func (d *DNSServer) generateMeta(qName string, node *structs.Node, ttl time.Dura
 	return extra
 }
 
-// serviceARecords is used to add the SRV records for a service lookup
+// serviceSRVRecords is used to add the SRV records for a service lookup
 func (d *DNSServer) serviceSRVRecords(cfg *dnsConfig, lookup serviceLookup, nodes structs.CheckServiceNodes, req, resp *dns.Msg, ttl time.Duration, maxRecursionLevel int) {
+	d.logger.Trace("serviceSRVRecords", "peer", lookup.PeerName, "datacenter", lookup.Datacenter, "service", lookup.Service, "nodes_count", len(nodes))
 	handled := make(map[string]struct{})
 
 	for _, node := range nodes {
 		// Avoid duplicate entries, possible if a node has
 		// the same service the same port, etc.
+
+		d.logger.Trace("serviceSRVRecords node", "node", node.Node.Node, "node_dc", node.Node.Datacenter, "service_peer", node.Service.PeerName, "service_addr", node.Service.Address)
 
 		// The datacenter should be empty during translation if it is a peering lookup.
 		// This should be fine because we should always prefer the WAN address.
@@ -2019,14 +2049,17 @@ func (d *DNSServer) serviceSRVRecords(cfg *dnsConfig, lookup serviceLookup, node
 		handled[tuple] = struct{}{}
 
 		answers, extra := d.nodeServiceRecords(lookup, node, req, ttl, cfg, maxRecursionLevel)
+		d.logger.Trace("serviceSRVRecords after nodeServiceRecords", "answers_count", len(answers), "extra_count", len(extra))
 
-		respDomain := d.getResponseDomain(req.Question[0].Name)
+		// respDomain := d.getResponseDomain(req.Question[0].Name)
 		resp.Answer = append(resp.Answer, answers...)
 		resp.Extra = append(resp.Extra, extra...)
 
-		if cfg.NodeMetaTXT {
-			resp.Extra = append(resp.Extra, d.generateMeta(nodeCanonicalDNSName(lookup, node.Node.Node, respDomain), node.Node, ttl)...)
-		}
+		d.logger.Trace("serviceSRVRecords response updated", "total_answers", len(resp.Answer), "total_extra", len(resp.Extra))
+
+		// if cfg.NodeMetaTXT {
+		// 	resp.Extra = append(resp.Extra, d.generateMeta(nodeCanonicalDNSName(lookup, node.Node.Node, respDomain), node.Node, ttl)...)
+		// }
 	}
 }
 
