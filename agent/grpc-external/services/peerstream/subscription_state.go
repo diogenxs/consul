@@ -61,13 +61,14 @@ func (s *subscriptionState) sendPendingEvents(
 	logger hclog.Logger,
 	pending *pendingPayload,
 ) {
+	logger.Debug("dio.test: processing pending events", "count", len(pending.Events))
 	for _, pendingEvt := range pending.Events {
 		cID := pendingEvt.CorrelationID
 		newVersion := pendingEvt.Version
 
 		oldVersion, ok := s.eventVersions[pendingEvt.ID]
 		if ok && newVersion == oldVersion {
-			logger.Trace("skipping send of duplicate public event", "correlationID", cID)
+			logger.Debug("skipping send of duplicate public event", "correlationID", cID)
 			continue
 		}
 

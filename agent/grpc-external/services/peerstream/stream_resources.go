@@ -303,8 +303,10 @@ func (s *Server) DrainStream(req HandleStreamRequest) {
 }
 
 func (s *Server) HandleStream(streamReq HandleStreamRequest) error {
+	s.Logger.Debug("dio.test: starting HandleStream for", streamReq.PeerName)
 	if err := s.realHandleStream(streamReq); err != nil {
 		s.Tracker.DisconnectedDueToError(streamReq.LocalID, err.Error())
+		s.Logger.Error("dio.test: error handling stream", "peer_name", streamReq.PeerName, "peer_id", streamReq.LocalID, "error", err)
 		return err
 	}
 	// TODO(peering) Also need to clear subscriptions associated with the peer
@@ -320,19 +322,22 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 		With("peer_name", streamReq.PeerName).
 		With("peer_id", streamReq.LocalID).
 		With("dialer", !streamReq.IsAcceptor())
-	logger.Trace("handling stream for peer")
+	logger.Debug("dio.test: handling stream for peer")
+	logger.Debug("dio.test:", s.Logger.GetLevel())
 
 	// handleStreamCtx is local to this function.
 	handleStreamCtx, cancel := context.WithCancel(streamReq.Stream.Context())
 	defer cancel()
 
 	status, err := s.Tracker.Connected(streamReq.LocalID)
+	logger.Debug("dio.test: got status from tracker", "status", status, "err", err)
 	if err != nil {
 		return fmt.Errorf("failed to register stream: %v", err)
 	}
 
 	var trustDomain string
 	if s.ConnectEnabled {
+		logger.Debug("dio.test: reading trust domain for peering")
 		// Read the TrustDomain up front - we do not allow users to change the ClusterID
 		// so reading it once at the beginning of the stream is sufficient.
 		trustDomain, err = getTrustDomain(s.GetStore(), logger)
@@ -415,6 +420,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 	go func() {
 		for {
 			msg, err := streamReq.Stream.Recv()
+			logger.Debug("dio.test: received message from stream", "msg", msg, "err", err)
 			if err != nil {
 				recvErrCh <- err
 				return
@@ -423,6 +429,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			select {
 			case recvCh <- msg:
 			case <-handleStreamCtx.Done():
+				logger.Debug("dio.test: recv goroutine exiting due to context done")
 				return
 			}
 		}
@@ -444,6 +451,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 						Heartbeat: &pbpeerstream.ReplicationMessage_Heartbeat{},
 					},
 				}
+				logger.Debug("dio.test: sending heartbeat", streamReq.PeerName)
 				if err := streamSend(heartbeat); err != nil {
 					logger.Warn("error sending heartbeat", "err", err)
 				}
@@ -500,6 +508,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			} else {
 				err = fmt.Errorf("unexpected error receiving from the stream: %w", err)
 			}
+			logger.Error("dio.test: error receiving from stream", "error", err)
 			status.TrackRecvError(err.Error())
 			return err
 
@@ -740,9 +749,9 @@ func logTraceSend(logger hclog.Logger, pb proto.Message) {
 }
 
 func logTraceProto(logger hclog.Logger, pb proto.Message, received bool) {
-	if !logger.IsTrace() {
-		return
-	}
+	// if !logger.IsTrace() {
+	// 	return
+	// }
 
 	dir := "sent"
 	if received {

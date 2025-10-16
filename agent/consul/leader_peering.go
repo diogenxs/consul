@@ -200,6 +200,7 @@ func (s *Server) syncPeeringsAndBlock(ctx context.Context, logger hclog.Logger, 
 	//   5. terminate []
 	connectedStreams := s.peerStreamServer.ConnectedStreams()
 
+	s.logger.Debug("dio.test: peering-syncer when add or remove a peer", "streams", connectedStreams)
 	state := s.fsm.State()
 
 	// Pull the state store contents and set up to block for changes.
@@ -316,6 +317,7 @@ func (s *Server) establishStream(ctx context.Context,
 	cancelFns map[string]context.CancelFunc) error {
 	logger = logger.With("peer_name", peer.Name, "peer_id", peer.ID)
 
+	logger.Debug("dio.test: establishStream", "peer", peer, "secret", secret)
 	if peer.PeerID == "" {
 		return fmt.Errorf("expected PeerID to be non empty; the wrong end of peering is being dialed")
 	}
@@ -380,7 +382,7 @@ func (s *Server) establishStream(ctx context.Context,
 		if err != nil {
 			return err
 		}
-
+		logger.Debug("dio.test: opened stream to peer", "addr", addr, "sending initial request")
 		initialReq := &pbpeerstream.ReplicationMessage{
 			Payload: &pbpeerstream.ReplicationMessage_Open_{
 				Open: &pbpeerstream.ReplicationMessage_Open{
@@ -398,6 +400,7 @@ func (s *Server) establishStream(ctx context.Context,
 			return fmt.Errorf("failed to send initial stream request: %w", err)
 		}
 
+		logger.Debug("dio.test: sent initial request, handing off stream to handler")
 		streamReq := peerstream.HandleStreamRequest{
 			LocalID:   peer.ID,
 			RemoteID:  peer.PeerID,
@@ -416,6 +419,7 @@ func (s *Server) establishStream(ctx context.Context,
 		return err
 
 	}, func(err error) {
+		logger.Debug("dio.test: getting error from peering stream", "error", err)
 		// TODO(peering): why are we using TrackSendError here? This could also be a receive error.
 		streamStatus.TrackSendError(err.Error())
 

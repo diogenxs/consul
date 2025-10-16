@@ -621,6 +621,7 @@ func (s *Server) PeeringRead(ctx context.Context, req *pbpeering.PeeringReadRequ
 
 	var resp *pbpeering.PeeringReadResponse
 	handled, err := s.ForwardRPC(&readRequest{options, emptyDCSpecificRequest}, func(conn *grpc.ClientConn) error {
+		s.Logger.Debug("dio.test: forwarding peering read request", "name", req.Name, "partition", req.Partition)
 		ctx := external.ForwardMetadataContext(ctx)
 		var err error
 		resp, err = pbpeering.NewPeeringServiceClient(conn).PeeringRead(ctx, req)
@@ -652,6 +653,7 @@ func (s *Server) PeeringRead(ctx context.Context, req *pbpeering.PeeringReadRequ
 			EnterpriseMeta: *entMeta,
 		}
 		idx, peering, err := store.PeeringRead(ws, q)
+		s.Logger.Debug("dio.test: peering read blocking query", "name", req.Name, "id", peering.GetID())
 		if err != nil {
 			return err
 		}
@@ -764,15 +766,20 @@ func (s *Server) PeeringList(ctx context.Context, req *pbpeering.PeeringListRequ
 // -- ImportedServicesCount and ExportedServicesCount
 // NOTE: we return a new peering with this additional data
 func (s *Server) reconcilePeering(peering *pbpeering.Peering) *pbpeering.Peering {
+	s.Logger.Debug("dio.test: reconciling peering state", "peerID", peering.ID, "peerName", peering.Name)
+	s.Logger.Debug("dio.test: connected streams", "streams", s.Tracker.ConnectedStreams())
 	cp := copyPeering(peering)
 	streamState, found := s.Tracker.StreamStatus(peering.ID)
 	if !found {
+		s.Logger.Debug("dio.test: did not find peer in stream tracker", peering)
+
 		// TODO(peering): this may be noise on non-leaders
 		s.Logger.Warn("did not find peer in stream tracker; cannot populate imported and"+
 			" exported services count or reconcile peering state", "peerID", peering.ID)
 		cp.StreamStatus = &pbpeering.StreamStatus{}
 		return cp
 	} else {
+		s.Logger.Debug("dio.test: found peer in stream tracker", "streamState", streamState)
 		// reconcile pbpeering.PeeringState_Active
 		if streamState.Connected {
 			cp.State = pbpeering.PeeringState_ACTIVE

@@ -63,6 +63,7 @@ func NewServer(cfg Config) *Server {
 	if cfg.Datacenter == "" {
 		panic("Datacenter is required")
 	}
+	// incomingHeartbeatTimeout
 	if cfg.outgoingHeartbeatInterval == 0 {
 		cfg.outgoingHeartbeatInterval = defaultOutgoingHeartbeatInterval
 	}
