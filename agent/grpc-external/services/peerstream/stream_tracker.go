@@ -2,6 +2,7 @@ package peerstream
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,8 +77,17 @@ func (t *Tracker) connectedLocked(id string) (*MutableStatus, error) {
 		return status, nil
 	}
 
+	// Check if there's a truly active stream by seeing if the done channel is still open
+	// If the old stream has exited (even if Connected flag hasn't been updated yet), we can proceed
 	if status.IsConnected() {
-		return nil, fmt.Errorf("there is an active stream for the given PeerID %q", id)
+		select {
+		case <-status.Done():
+			// Old stream is dead (doneCh closed), allow new connection
+			// This prevents race condition where stream fails but Connected hasn't been updated yet
+		default:
+			// doneCh still open, stream is truly active
+			return nil, fmt.Errorf("there is an active stream for the given PeerID %q", id)
+		}
 	}
 	status.TrackConnected()
 
@@ -121,9 +131,67 @@ func (t *Tracker) StreamStatus(id string) (resp Status, found bool) {
 func (t *Tracker) StreamStatusString(id string) string {
 	status, found := t.StreamStatus(id)
 	if !found {
-		return fmt.Sprintf("Peer ID: %s\nStatus: Not Found (Never Connected)\n", id)
+		return fmt.Sprintf("peer_id=%s status=not_found", id)
 	}
-	return fmt.Sprintf("Peer ID: %s\n%s", id, status.String())
+
+	// Build one-line compact status
+	var parts []string
+	parts = append(parts, fmt.Sprintf("peer_id=%s", id))
+
+	// Connection status
+	if status.Connected {
+		parts = append(parts, "status=connected")
+	} else if status.NeverConnected {
+		parts = append(parts, "status=never_connected")
+	} else {
+		parts = append(parts, "status=disconnected")
+		if status.DisconnectTime != nil {
+			parts = append(parts, fmt.Sprintf("disconnect_time=%s", status.DisconnectTime.Format(time.RFC3339)))
+		}
+		if status.DisconnectErrorMessage != "" {
+			parts = append(parts, fmt.Sprintf("disconnect_error=%q", status.DisconnectErrorMessage))
+		}
+	}
+
+	// Send status
+	if status.LastSendSuccess != nil {
+		parts = append(parts, fmt.Sprintf("last_send=%s", status.LastSendSuccess.Format(time.RFC3339)))
+	}
+	if status.LastAck != nil {
+		parts = append(parts, fmt.Sprintf("last_ack=%s", status.LastAck.Format(time.RFC3339)))
+	}
+	if status.LastNack != nil {
+		parts = append(parts, fmt.Sprintf("last_nack=%s", status.LastNack.Format(time.RFC3339)))
+		if status.LastNackMessage != "" {
+			parts = append(parts, fmt.Sprintf("nack_msg=%q", status.LastNackMessage))
+		}
+	}
+	if status.LastSendError != nil {
+		parts = append(parts, fmt.Sprintf("last_send_error=%s", status.LastSendError.Format(time.RFC3339)))
+		if status.LastSendErrorMessage != "" {
+			parts = append(parts, fmt.Sprintf("send_error_msg=%q", status.LastSendErrorMessage))
+		}
+	}
+
+	// Receive status
+	if status.LastRecvResourceSuccess != nil {
+		parts = append(parts, fmt.Sprintf("last_recv=%s", status.LastRecvResourceSuccess.Format(time.RFC3339)))
+	}
+	if status.LastRecvHeartbeat != nil {
+		parts = append(parts, fmt.Sprintf("last_heartbeat=%s", status.LastRecvHeartbeat.Format(time.RFC3339)))
+	}
+	if status.LastRecvError != nil {
+		parts = append(parts, fmt.Sprintf("last_recv_error=%s", status.LastRecvError.Format(time.RFC3339)))
+		if status.LastRecvErrorMessage != "" {
+			parts = append(parts, fmt.Sprintf("recv_error_msg=%q", status.LastRecvErrorMessage))
+		}
+	}
+
+	// Service counts
+	parts = append(parts, fmt.Sprintf("imported=%d", len(status.ImportedServices)))
+	parts = append(parts, fmt.Sprintf("exported=%d", len(status.ExportedServices)))
+
+	return strings.Join(parts, " ")
 }
 
 func (t *Tracker) ConnectedStreams() map[string]chan struct{} {
@@ -187,6 +255,69 @@ func (t *Tracker) IsHealthy(s Status) bool {
 	}
 
 	return true
+}
+
+// HealthReport returns a detailed health report for a peering status
+func (t *Tracker) HealthReport(s Status) string {
+	if t.IsHealthy(s) {
+		return "healthy"
+	}
+
+	now := t.timeNow()
+	var reasons []string
+
+	// Check disconnection
+	if s.DisconnectTime != nil {
+		timeSinceDisconnect := now.Sub(*s.DisconnectTime)
+		if timeSinceDisconnect > t.heartbeatTimeout {
+			reasons = append(reasons, fmt.Sprintf(
+				"disconnected for %s (threshold: %s), error: %q",
+				timeSinceDisconnect.Round(time.Second),
+				t.heartbeatTimeout,
+				s.DisconnectErrorMessage,
+			))
+		}
+	}
+
+	// Check NACK vs ACK
+	lastAck := s.LastAck
+	if lastAck == nil {
+		lastAck = &time.Time{}
+	}
+	if s.LastNack != nil && s.LastNack.After(*lastAck) {
+		timeSinceLastAck := now.Sub(*lastAck)
+		if timeSinceLastAck > t.heartbeatTimeout {
+			reasons = append(reasons, fmt.Sprintf(
+				"last NACK (%s) is after last ACK (%s), NACK message: %q",
+				s.LastNack.Format(time.RFC3339),
+				lastAck.Format(time.RFC3339),
+				s.LastNackMessage,
+			))
+		}
+	}
+
+	// Check receive errors
+	lastRecvSuccess := s.LastRecvResourceSuccess
+	if lastRecvSuccess == nil {
+		lastRecvSuccess = &time.Time{}
+	}
+	if s.LastRecvError != nil && s.LastRecvError.After(*lastRecvSuccess) {
+		timeSinceLastRecvSuccess := now.Sub(*lastRecvSuccess)
+		if timeSinceLastRecvSuccess > t.heartbeatTimeout {
+			reasons = append(reasons, fmt.Sprintf(
+				"last receive error (%s) is after last receive success (%s), error: %q",
+				s.LastRecvError.Format(time.RFC3339),
+				lastRecvSuccess.Format(time.RFC3339),
+				s.LastRecvErrorMessage,
+			))
+		}
+	}
+
+	if len(reasons) == 0 {
+		return "unhealthy (unknown reason)"
+	}
+
+	return fmt.Sprintf("unhealthy: %s", strings.Join(reasons, "; "))
 }
 
 type MutableStatus struct {

@@ -303,9 +303,8 @@ func (s *Server) DrainStream(req HandleStreamRequest) {
 
 func (s *Server) HandleStream(streamReq HandleStreamRequest) error {
 	if err := s.realHandleStream(streamReq); err != nil {
-		s.Logger.Debug("dio.test: stream handler error", "peer_name", streamReq.PeerName, "peer_id", streamReq.LocalID, "error", err)
 		s.Tracker.DisconnectedDueToError(streamReq.LocalID, err.Error())
-		s.Logger.Debug("dio.test: stream handler error new peer status", s.Tracker.StreamStatusString(streamReq.LocalID))
+		s.Logger.Error("dio.test: stream handler error new peer status", s.Tracker.StreamStatusString(streamReq.LocalID))
 		return err
 	}
 	// TODO(peering) Also need to clear subscriptions associated with the peer
@@ -332,7 +331,9 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 	status, err := s.Tracker.Connected(streamReq.LocalID)
 	if err != nil {
 		logger.Error("dio.test: failed to register stream", "error", err)
-		return fmt.Errorf("failed to register stream: %v", err)
+		// Return a FailedPrecondition error so the dialer retries quickly (8ms intervals)
+		// This commonly happens during leader elections when the old stream hasn't been cleaned up yet
+		return grpcstatus.Error(codes.FailedPrecondition, fmt.Sprintf("failed to register stream: %v", err))
 	}
 	logger.Info("dio.test: stream registered successfully")
 
@@ -516,6 +517,8 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 				// exits. After the method exits this code here won't receive any recv errors and those will be handled
 				// by DrainStream().
 				logger.Error("dio.test: stream ended unexpectedly (EOF)")
+				logger.Error("dio.test: deleting stream status (EOF)")
+				s.Tracker.DeleteStatus(streamReq.LocalID)
 				err = fmt.Errorf("stream ended unexpectedly")
 			} else {
 				logger.Error("dio.test: unexpected error receiving from stream", "error", err)

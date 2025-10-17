@@ -758,8 +758,6 @@ func (s *Server) PeeringList(ctx context.Context, req *pbpeering.PeeringListRequ
 // NOTE: we return a new peering with this additional data
 func (s *Server) reconcilePeering(peering *pbpeering.Peering) *pbpeering.Peering {
 	streamState, found := s.Tracker.StreamStatus(peering.ID)
-	s.Logger.Debug("dio.test: reconcilePeering current stream state", s.Tracker.StreamStatusString(peering.ID))
-	s.Logger.Debug("dio.test: streamstate connected streams", s.Tracker.ConnectedStreams())
 
 	if !found {
 		// TODO(peering): this may be noise on non-leaders
@@ -768,6 +766,24 @@ func (s *Server) reconcilePeering(peering *pbpeering.Peering) *pbpeering.Peering
 		peering.StreamStatus = &pbpeering.StreamStatus{}
 		return peering
 	} else {
+		// Log detailed stream status for diagnostics
+		s.Logger.Trace("peering stream status",
+			"peer_name", peering.Name,
+			"peer_id", peering.ID,
+			"connected", streamState.Connected,
+			"never_connected", streamState.NeverConnected,
+			"disconnect_time", streamState.DisconnectTime,
+			"disconnect_error", streamState.DisconnectErrorMessage,
+			"last_ack", streamState.LastAck,
+			"last_nack", streamState.LastNack,
+			"last_nack_msg", streamState.LastNackMessage,
+			"last_send_error", streamState.LastSendError,
+			"last_send_error_msg", streamState.LastSendErrorMessage,
+			"last_recv_error", streamState.LastRecvError,
+			"last_recv_error_msg", streamState.LastRecvErrorMessage,
+			"imported_services_count", len(streamState.ImportedServices),
+			"exported_services_count", len(streamState.ExportedServices),
+		)
 		cp := copyPeering(peering)
 
 		// reconcile pbpeering.PeeringState_Active
@@ -790,8 +806,20 @@ func (s *Server) reconcilePeering(peering *pbpeering.Peering) *pbpeering.Peering
 			return &latest
 		}
 
-		lastRecv := latest(streamState.LastRecvHeartbeat, streamState.LastRecvError, streamState.LastRecvResourceSuccess)
-		lastSend := latest(streamState.LastSendError, streamState.LastSendSuccess)
+		// Include ACK/NACK in receive timing for more accurate "last activity" tracking
+		lastRecv := latest(
+			streamState.LastRecvHeartbeat,
+			streamState.LastRecvError,
+			streamState.LastRecvResourceSuccess,
+			streamState.LastAck,
+			streamState.LastNack,
+		)
+
+		// Include send success and errors in send timing
+		lastSend := latest(
+			streamState.LastSendError,
+			streamState.LastSendSuccess,
+		)
 
 		cp.StreamStatus = &pbpeering.StreamStatus{
 			ImportedServices: streamState.ImportedServices,

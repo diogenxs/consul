@@ -20,7 +20,7 @@ import (
 // extracted from private peering
 
 const (
-	defaultOutgoingHeartbeatInterval = 15 * time.Second
+	defaultOutgoingHeartbeatInterval = 30 * time.Second
 	defaultIncomingHeartbeatTimeout  = 2 * time.Minute
 )
 
