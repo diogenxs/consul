@@ -117,6 +117,15 @@ func (t *Tracker) StreamStatus(id string) (resp Status, found bool) {
 	return s.GetStatus(), true
 }
 
+// StreamStatusString returns a formatted string representation of the stream status for a given peer.
+func (t *Tracker) StreamStatusString(id string) string {
+	status, found := t.StreamStatus(id)
+	if !found {
+		return fmt.Sprintf("Peer ID: %s\nStatus: Not Found (Never Connected)\n", id)
+	}
+	return fmt.Sprintf("Peer ID: %s\n%s", id, status.String())
+}
+
 func (t *Tracker) ConnectedStreams() map[string]chan struct{} {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -254,6 +263,84 @@ func (s *Status) GetImportedServicesCount() uint64 {
 
 func (s *Status) GetExportedServicesCount() uint64 {
 	return uint64(len(s.ExportedServices))
+}
+
+// String returns a formatted string representation of the Status
+func (s *Status) String() string {
+	var result string
+
+	// Connection state
+	if s.Connected {
+		result += "Status: Connected\n"
+	} else if s.NeverConnected {
+		result += "Status: Never Connected\n"
+	} else {
+		result += "Status: Disconnected\n"
+		if s.DisconnectTime != nil {
+			result += fmt.Sprintf("  Disconnected At: %s\n", s.DisconnectTime.Format(time.RFC3339))
+		}
+		if s.DisconnectErrorMessage != "" {
+			result += fmt.Sprintf("  Disconnect Error: %s\n", s.DisconnectErrorMessage)
+		}
+	}
+
+	// Replication TO peer (Send)
+	result += "\nReplication TO Peer:\n"
+	if s.LastSendSuccess != nil {
+		result += fmt.Sprintf("  Last Send Success: %s\n", s.LastSendSuccess.Format(time.RFC3339))
+	}
+	if s.LastAck != nil {
+		result += fmt.Sprintf("  Last ACK: %s\n", s.LastAck.Format(time.RFC3339))
+	}
+	if s.LastNack != nil {
+		result += fmt.Sprintf("  Last NACK: %s\n", s.LastNack.Format(time.RFC3339))
+		if s.LastNackMessage != "" {
+			result += fmt.Sprintf("    Message: %s\n", s.LastNackMessage)
+		}
+	}
+	if s.LastSendError != nil {
+		result += fmt.Sprintf("  Last Send Error: %s\n", s.LastSendError.Format(time.RFC3339))
+		if s.LastSendErrorMessage != "" {
+			result += fmt.Sprintf("    Message: %s\n", s.LastSendErrorMessage)
+		}
+	}
+
+	// Replication FROM peer (Receive)
+	result += "\nReplication FROM Peer:\n"
+	if s.LastRecvResourceSuccess != nil {
+		result += fmt.Sprintf("  Last Receive Success: %s\n", s.LastRecvResourceSuccess.Format(time.RFC3339))
+	}
+	if s.LastRecvHeartbeat != nil {
+		result += fmt.Sprintf("  Last Heartbeat: %s\n", s.LastRecvHeartbeat.Format(time.RFC3339))
+	}
+	if s.LastRecvError != nil {
+		result += fmt.Sprintf("  Last Receive Error: %s\n", s.LastRecvError.Format(time.RFC3339))
+		if s.LastRecvErrorMessage != "" {
+			result += fmt.Sprintf("    Message: %s\n", s.LastRecvErrorMessage)
+		}
+	}
+
+	// Services
+	result += "\nServices:\n"
+	result += fmt.Sprintf("  Imported: %d services\n", len(s.ImportedServices))
+	if len(s.ImportedServices) > 0 && len(s.ImportedServices) <= 5 {
+		for _, svc := range s.ImportedServices {
+			result += fmt.Sprintf("    - %s\n", svc)
+		}
+	} else if len(s.ImportedServices) > 5 {
+		result += "    (too many to list)\n"
+	}
+
+	result += fmt.Sprintf("  Exported: %d services\n", len(s.ExportedServices))
+	if len(s.ExportedServices) > 0 && len(s.ExportedServices) <= 5 {
+		for _, svc := range s.ExportedServices {
+			result += fmt.Sprintf("    - %s\n", svc)
+		}
+	} else if len(s.ExportedServices) > 5 {
+		result += "    (too many to list)\n"
+	}
+
+	return result
 }
 
 func newMutableStatus(now func() time.Time, connected bool) *MutableStatus {

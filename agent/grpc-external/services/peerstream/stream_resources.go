@@ -301,7 +301,9 @@ func (s *Server) DrainStream(req HandleStreamRequest) {
 
 func (s *Server) HandleStream(streamReq HandleStreamRequest) error {
 	if err := s.realHandleStream(streamReq); err != nil {
+		s.Logger.Debug("dio.test: stream handler error", "peer_name", streamReq.PeerName, "peer_id", streamReq.LocalID, "error", err)
 		s.Tracker.DisconnectedDueToError(streamReq.LocalID, err.Error())
+		s.Logger.Debug("dio.test: stream handler error new peer status", s.Tracker.StreamStatusString(streamReq.LocalID))
 		return err
 	}
 	// TODO(peering) Also need to clear subscriptions associated with the peer
@@ -317,30 +319,38 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 		With("peer_name", streamReq.PeerName).
 		With("peer_id", streamReq.LocalID).
 		With("dailer", !streamReq.IsAcceptor())
+	logger.Info("dio.test: realHandleStream started")
 	logger.Trace("handling stream for peer")
 
 	// handleStreamCtx is local to this function.
 	handleStreamCtx, cancel := context.WithCancel(streamReq.Stream.Context())
 	defer cancel()
 
+	logger.Info("dio.test: registering stream with tracker")
 	status, err := s.Tracker.Connected(streamReq.LocalID)
 	if err != nil {
+		logger.Error("dio.test: failed to register stream", "error", err)
 		return fmt.Errorf("failed to register stream: %v", err)
 	}
+	logger.Info("dio.test: stream registered successfully")
 
 	var trustDomain string
 	if s.ConnectEnabled {
+		logger.Info("dio.test: getting trust domain")
 		// Read the TrustDomain up front - we do not allow users to change the ClusterID
 		// so reading it once at the beginning of the stream is sufficient.
 		trustDomain, err = getTrustDomain(s.GetStore(), logger)
 		if err != nil {
+			logger.Error("dio.test: failed to get trust domain", "error", err)
 			return err
 		}
+		logger.Info("dio.test: trust domain retrieved", "trustDomain", trustDomain)
 	}
 
+	logger.Info("dio.test: creating subscription manager")
 	remoteSubTracker := newResourceSubscriptionTracker()
 	mgr := newSubscriptionManager(
-		streamReq.Stream.Context(),
+		handleStreamCtx,
 		logger,
 		s.Config,
 		trustDomain,
@@ -348,7 +358,9 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 		s.GetStore,
 		remoteSubTracker,
 	)
-	subCh := mgr.subscribe(streamReq.Stream.Context(), streamReq.LocalID, streamReq.PeerName, streamReq.Partition)
+	logger.Info("dio.test: subscribing to updates")
+	subCh := mgr.subscribe(handleStreamCtx, streamReq.LocalID, streamReq.PeerName, streamReq.Partition)
+	logger.Info("dio.test: subscription channel created")
 
 	// We need a mutex to protect against simultaneous sends to the client.
 	var sendMutex sync.Mutex
@@ -368,7 +380,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 		if msg.GetResponse() != nil {
 			if err != nil {
 				if id := msg.GetResponse().GetResourceID(); id != "" {
-					logger.Error("failed to send resource", "resourceID", id, "error", err)
+					logger.Error("dio.test: failed to send resource", "resourceID", id, "error", err)
 					status.TrackSendError(err.Error())
 					return nil
 				}
@@ -391,16 +403,21 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 	}
 
 	// Subscribe to all relevant resource types.
+	logger.Info("dio.test: subscribing to resource types", "count", len(resources))
 	for _, resourceURL := range resources {
+		logger.Info("dio.test: sending subscription request", "resourceURL", resourceURL)
 		sub := makeReplicationRequest(&pbpeerstream.ReplicationMessage_Request{
 			ResourceURL: resourceURL,
 			PeerID:      streamReq.RemoteID,
 		})
 		if err := streamSend(sub); err != nil {
 			// TODO(peering) Test error handling in calls to Send/Recv
+			logger.Error("dio.test: failed to send subscription", "resourceURL", resourceURL, "error", err)
 			return fmt.Errorf("failed to send subscription for %q to stream: %w", resourceURL, err)
 		}
+		logger.Info("dio.test: subscription sent successfully", "resourceURL", resourceURL)
 	}
+	logger.Info("dio.test: all subscriptions sent, entering main loop")
 
 	// recvCh sends messages from the gRPC stream.
 	recvCh := make(chan *pbpeerstream.ReplicationMessage)
@@ -462,10 +479,12 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 	var nonce uint64
 
 	// The main loop that processes sends and receives.
+	logger.Info("dio.test: starting main loop")
 	for {
 		select {
 		// When the doneCh is closed that means that the peering was deleted locally.
 		case <-status.Done():
+			logger.Info("dio.test: status.Done() received, ending stream")
 			logger.Info("ending stream")
 
 			term := &pbpeerstream.ReplicationMessage{
@@ -487,14 +506,17 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 
 		// Handle errors received from the stream by shutting down our handler.
 		case err := <-recvErrCh:
+			logger.Error("dio.test: received error from stream", "error", err)
 			if err == io.EOF {
 				// NOTE: We don't expect to receive an io.EOF error here when the stream is disconnected gracefully.
 				// When the peering is deleted locally, status.Done() returns which is handled elsewhere and this method
 				// exits. When we receive a Terminated message, that's also handled elsewhere and this method
 				// exits. After the method exits this code here won't receive any recv errors and those will be handled
 				// by DrainStream().
+				logger.Error("dio.test: stream ended unexpectedly (EOF)")
 				err = fmt.Errorf("stream ended unexpectedly")
 			} else {
+				logger.Error("dio.test: unexpected error receiving from stream", "error", err)
 				err = fmt.Errorf("unexpected error receiving from the stream: %w", err)
 			}
 			status.TrackRecvError(err.Error())
@@ -502,14 +524,17 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 
 		// We haven't received a heartbeat within the expected interval. Kill the stream.
 		case <-incomingHeartbeatCtx.Done():
+			logger.Error("dio.test: heartbeat timeout detected")
 			return fmt.Errorf("heartbeat timeout")
 
 		case msg := <-recvCh:
+			logger.Info("dio.test: received message from peer")
 			// NOTE: this code should have similar error handling to the
 			// initial handling code in StreamResources()
 
 			if !s.Backend.IsLeader() {
 				// We are not the leader anymore, so we will hang up on the dialer.
+				logger.Error("dio.test: not a leader, cannot continue streaming")
 				logger.Info("node is not a leader anymore; cannot continue streaming")
 
 				st, err := grpcstatus.New(codes.FailedPrecondition,
@@ -524,7 +549,9 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			}
 
 			if req := msg.GetRequest(); req != nil {
+				logger.Info("dio.test: processing request message", "resourceURL", req.ResourceURL)
 				if !pbpeerstream.KnownTypeURL(req.ResourceURL) {
+					logger.Error("dio.test: unknown resource URL", "resourceURL", req.ResourceURL)
 					return grpcstatus.Errorf(codes.InvalidArgument, "subscription request to unknown resource URL: %s", req.ResourceURL)
 				}
 
@@ -610,16 +637,20 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			}
 
 			if resp := msg.GetResponse(); resp != nil {
+				logger.Info("dio.test: processing response message", "resourceURL", resp.ResourceURL, "resourceID", resp.ResourceID)
 				reply, err := s.processResponse(streamReq.PeerName, streamReq.Partition, status, resp)
 				if err != nil {
+					logger.Error("dio.test: failed to persist resource", "resourceURL", resp.ResourceURL, "resourceID", resp.ResourceID, "error", err)
 					logger.Error("failed to persist resource", "resourceURL", resp.ResourceURL, "resourceID", resp.ResourceID)
 					status.TrackRecvError(err.Error())
 				} else {
+					logger.Info("dio.test: resource persisted successfully", "resourceURL", resp.ResourceURL, "resourceID", resp.ResourceID)
 					status.TrackRecvResourceSuccess()
 				}
 
 				// We are replying ACK or NACK depending on whether we successfully processed the response.
 				if err := streamSend(reply); err != nil {
+					logger.Error("dio.test: failed to send to stream", "reply", reply, "error", err)
 					return fmt.Errorf("failed to send to stream: %v", err)
 				}
 
@@ -627,16 +658,20 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			}
 
 			if term := msg.GetTerminated(); term != nil {
+				logger.Info("dio.test: received termination message from peer")
 				logger.Info("peering was deleted by our peer: marking peering as terminated and cleaning up imported resources")
 
 				// Once marked as terminated, a separate deferred deletion routine will clean up imported resources.
 				if err := s.Backend.PeeringTerminateByID(&pbpeering.PeeringTerminateByIDRequest{ID: streamReq.LocalID}); err != nil {
+					logger.Error("dio.test: failed to mark peering as terminated", "error", err)
 					logger.Error("failed to mark peering as terminated: %w", err)
 				}
+				logger.Info("dio.test: peering marked as terminated, returning")
 				return nil
 			}
 
 			if msg.GetHeartbeat() != nil {
+				logger.Trace("dio.test: received heartbeat from peer")
 				status.TrackRecvHeartbeat()
 
 				// Reset the heartbeat timeout by creating a new context.
@@ -653,43 +688,54 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			}
 
 		case update := <-subCh:
+			logger.Info("dio.test: received subscription update", "correlationID", update.CorrelationID)
 			var resp *pbpeerstream.ReplicationMessage_Response
 			switch {
 			case strings.HasPrefix(update.CorrelationID, subExportedServiceList):
+				logger.Info("dio.test: processing exported service list update")
 				resp, err = makeExportedServiceListResponse(status, update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
+					logger.Error("dio.test: failed to create exported service list response", "error", err)
 					logger.Error("failed to create exported service list response", "error", err)
 					continue
 				}
 			case strings.HasPrefix(update.CorrelationID, subExportedService):
+				logger.Info("dio.test: processing exported service update")
 				resp, err = makeServiceResponse(update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
+					logger.Error("dio.test: failed to create service response", "error", err)
 					logger.Error("failed to create service response", "error", err)
 					continue
 				}
 
 			case update.CorrelationID == subCARoot:
+				logger.Info("dio.test: processing CA roots update")
 				resp, err = makeCARootsResponse(update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
+					logger.Error("dio.test: failed to create ca roots response", "error", err)
 					logger.Error("failed to create ca roots response", "error", err)
 					continue
 				}
 
 			case update.CorrelationID == subServerAddrs:
+				logger.Info("dio.test: processing server addresses update")
 				resp, err = makeServerAddrsResponse(update)
 				if err != nil {
+					logger.Error("dio.test: failed to create server address response", "error", err)
 					logger.Error("failed to create server address response", "error", err)
 					continue
 				}
 
 			default:
+				logger.Warn("dio.test: unrecognized update type from subscription manager: " + update.CorrelationID)
 				logger.Warn("unrecognized update type from subscription manager: " + update.CorrelationID)
 				continue
 			}
 			if resp == nil {
+				logger.Info("dio.test: response is nil, skipping")
 				continue
 			}
 
@@ -697,11 +743,14 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			nonce++
 			resp.Nonce = fmt.Sprintf("%08x", nonce)
 
+			logger.Info("dio.test: sending replication response", "nonce", resp.Nonce, "correlationID", update.CorrelationID)
 			replResp := makeReplicationResponse(resp)
 			if err := streamSend(replResp); err != nil {
 				// note: govet warns of context leak but it is cleaned up in a defer
+				logger.Error("dio.test: failed to push data", "correlationID", update.CorrelationID, "error", err)
 				return fmt.Errorf("failed to push data for %q: %w", update.CorrelationID, err)
 			}
+			logger.Info("dio.test: replication response sent successfully", "correlationID", update.CorrelationID)
 		}
 	}
 }
@@ -737,9 +786,9 @@ func logTraceSend(logger hclog.Logger, pb proto.Message) {
 }
 
 func logTraceProto(logger hclog.Logger, pb proto.Message, received bool) {
-	if !logger.IsTrace() {
-		return
-	}
+	// if !logger.IsTrace() {
+	// 	return
+	// }
 
 	dir := "sent"
 	if received {
@@ -776,7 +825,7 @@ func logTraceProto(logger hclog.Logger, pb proto.Message, received bool) {
 		out = string(outBytes)
 	}
 
-	logger.Trace("replication message", "direction", dir, "protobuf", out)
+	logger.Debug("replication message", "direction", dir, "protobuf", out)
 }
 
 // resourceSubscriptionTracker is used to keep track of the ResourceURLs that a

@@ -362,7 +362,7 @@ func (s *Server) establishStream(ctx context.Context,
 			}),
 			grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(8*1024*1024), grpc.MaxCallRecvMsgSize(8*1024*1024)),
 		}
-
+		logger.Info("dio.test: dialing peer", "addr", addr, "peer_name", peer.Name, "peer_id", peer.ID)
 		logger.Trace("dialing peer", "addr", addr)
 		conn, err := grpc.DialContext(streamCtx, addr, opts...)
 
@@ -392,7 +392,7 @@ func (s *Server) establishStream(ctx context.Context,
 		if err := stream.Send(initialReq); err != nil {
 			return fmt.Errorf("failed to send initial stream request: %w", err)
 		}
-
+		logger.Debug("dio.test: starting outbound stream to peer", peer.Name)
 		streamReq := peerstream.HandleStreamRequest{
 			LocalID:   peer.ID,
 			RemoteID:  peer.PeerID,
@@ -401,6 +401,7 @@ func (s *Server) establishStream(ctx context.Context,
 			Stream:    stream,
 		}
 		err = s.peerStreamServer.HandleStream(streamReq)
+		logger.Debug("dio.test: outbound stream to peer ended", peer.Name, "error", err)
 		// A nil error indicates that the peering was deleted and the stream needs to be gracefully shutdown.
 		if err == nil {
 			stream.CloseSend()
@@ -411,23 +412,24 @@ func (s *Server) establishStream(ctx context.Context,
 		return err
 
 	}, func(err error) {
+		logger.Info("dio.test: stream to peer ended, will retry", "error", err)
 		// TODO(peering): why are we using TrackSendError here? This could also be a receive error.
 		streamStatus.TrackSendError(err.Error())
 
 		switch {
 		case isErrCode(err, codes.FailedPrecondition):
-			logger.Debug("stream disconnected due to 'failed precondition' error; reconnecting",
+			logger.Debug("dio.test: stream disconnected due to 'failed precondition' error; reconnecting",
 				"error", err)
 
 		case isErrCode(err, codes.ResourceExhausted):
-			logger.Debug("stream disconnected due to 'resource exhausted' error; reconnecting",
+			logger.Debug("dio.test: stream disconnected due to 'resource exhausted' error; reconnecting",
 				"error", err)
 
 		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-			logger.Debug("stream context was canceled", "error", err)
+			logger.Debug("dio.test: stream context was canceled", "error", err)
 
 		case err != nil:
-			logger.Error("error managing peering stream", "error", err)
+			logger.Error("dio.test: error managing peering stream", "error", err)
 		}
 	}, peeringRetryTimeout)
 
@@ -670,11 +672,13 @@ func retryLoopBackoffPeering(ctx context.Context, logger hclog.Logger, loopFn fu
 			}
 
 			retryTime := retryTimeFn(failedAttempts, err)
+			logger.Debug("dio.test: peering connection will retry", "attempt", failedAttempts, "retry_time", retryTime, "error", err)
 			logger.Trace("in connection retry backoff", "delay", retryTime)
 			timer := time.NewTimer(retryTime)
 
 			select {
 			case <-ctx.Done():
+				logger.Debug("dio.test: peering connection retry loop exiting due to context cancellation")
 				timer.Stop()
 				return
 			case <-timer.C:
