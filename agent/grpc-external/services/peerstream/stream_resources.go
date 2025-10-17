@@ -242,6 +242,7 @@ func (s *Server) StreamResources(stream pbpeerstream.PeerStreamService_StreamRes
 		return grpcstatus.Error(codes.InvalidArgument, "expected PeerID to be empty; the wrong end of peering is being dialed")
 	}
 
+	logger.Debug("dio.test: receiving stream for peering", "peer_name", p.Name, "peer_id", req.PeerID)
 	streamReq := HandleStreamRequest{
 		LocalID:   p.ID,
 		RemoteID:  "",
@@ -250,6 +251,7 @@ func (s *Server) StreamResources(stream pbpeerstream.PeerStreamService_StreamRes
 		Stream:    stream,
 	}
 	err = s.HandleStream(streamReq)
+	logger.Debug("dio.test: stream handler exited", "peer_name", p.Name, "peer_id", req.PeerID, "error", err)
 	// A nil error indicates that the peering was deleted and the stream needs to be gracefully shutdown.
 	if err == nil {
 		s.DrainStream(streamReq)
@@ -350,7 +352,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 	logger.Info("dio.test: creating subscription manager")
 	remoteSubTracker := newResourceSubscriptionTracker()
 	mgr := newSubscriptionManager(
-		handleStreamCtx,
+		streamReq.Stream.Context(),
 		logger,
 		s.Config,
 		trustDomain,
@@ -359,7 +361,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 		remoteSubTracker,
 	)
 	logger.Info("dio.test: subscribing to updates")
-	subCh := mgr.subscribe(handleStreamCtx, streamReq.LocalID, streamReq.PeerName, streamReq.Partition)
+	subCh := mgr.subscribe(streamReq.Stream.Context(), streamReq.LocalID, streamReq.PeerName, streamReq.Partition)
 	logger.Info("dio.test: subscription channel created")
 
 	// We need a mutex to protect against simultaneous sends to the client.

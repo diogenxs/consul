@@ -664,12 +664,14 @@ func retryLoopBackoffPeering(ctx context.Context, logger hclog.Logger, loopFn fu
 	var failedAttempts uint
 	var err error
 	for {
+		logger.Debug("dio.test: peering connection retry loop starting iteration starting")
 		if err = loopFn(); err != nil {
 			errFn(err)
 
 			if failedAttempts < math.MaxUint {
 				failedAttempts++
 			}
+			logger.Debug("dio.test: peering connection retry loop starting iteration", "attempt", failedAttempts, "error", err)
 
 			retryTime := retryTimeFn(failedAttempts, err)
 			logger.Debug("dio.test: peering connection will retry", "attempt", failedAttempts, "retry_time", retryTime, "error", err)
@@ -685,6 +687,7 @@ func retryLoopBackoffPeering(ctx context.Context, logger hclog.Logger, loopFn fu
 			}
 			continue
 		}
+		logger.Debug("dio.test: peering connection retry loop exiting after successful iteration, iteration", "attempt", failedAttempts)
 		return
 	}
 }
