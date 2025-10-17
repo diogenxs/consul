@@ -558,10 +558,21 @@ func (s *MutableStatus) TrackDisconnectedGracefully() {
 // For example the heartbeat timed out, or we couldn't send into the stream.
 func (s *MutableStatus) TrackDisconnectedDueToError(error string) {
 	s.mu.Lock()
+	wasConnected := s.Connected
 	s.Connected = false
 	s.DisconnectTime = ptr(s.timeNow().UTC())
 	s.DisconnectErrorMessage = error
 	s.mu.Unlock()
+
+	// Close doneCh to signal stream is dead (only if it was previously connected)
+	if wasConnected {
+		select {
+		case <-s.doneCh:
+			// Already closed, nothing to do
+		default:
+			close(s.doneCh)
+		}
+	}
 }
 
 func (s *MutableStatus) IsConnected() bool {
