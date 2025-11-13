@@ -110,6 +110,8 @@ func (m *subscriptionManager) subscribe(ctx context.Context, peerID, peerName, p
 }
 
 func (m *subscriptionManager) handleEvents(ctx context.Context, state *subscriptionState, updateCh <-chan cache.UpdateEvent) {
+	defer state.cleanup()
+
 	for {
 		// TODO(peering): exponential backoff
 

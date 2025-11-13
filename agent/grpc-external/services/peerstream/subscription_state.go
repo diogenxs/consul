@@ -127,6 +127,16 @@ func (s *subscriptionState) cleanupEventVersions(logger hclog.Logger) {
 	}
 }
 
+// cleanup cancels all active service subscriptions and cleans up resources.
+// This should be called when the peer stream is being torn down to ensure
+// all goroutines watching for service updates are properly stopped.
+func (s *subscriptionState) cleanup() {
+	for svc, cancel := range s.watchedServices {
+		cancel()
+		delete(s.watchedServices, svc)
+	}
+}
+
 type pendingPayload struct {
 	Events []pendingEvent
 }

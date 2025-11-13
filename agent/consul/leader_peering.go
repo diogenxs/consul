@@ -420,8 +420,9 @@ func (s *Server) establishStream(ctx context.Context,
 
 	}, func(err error) {
 		logger.Debug("dio.test: getting error from peering stream", "error", err)
-		// TODO(peering): why are we using TrackSendError here? This could also be a receive error.
-		streamStatus.TrackSendError(err.Error())
+		logger.Info("dio.test: peering stream disconnected, current status: ", "status", streamStatus.Status)
+		// Note: Don't track error here - it's already tracked inside realHandleStream() with the correct type
+		// (TrackSendError vs TrackRecvError depending on whether it was a send or receive error).
 
 		switch {
 		case isErrCode(err, codes.FailedPrecondition):

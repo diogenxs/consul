@@ -62,7 +62,7 @@ func NewStore(logger hclog.Logger) *Store {
 		logger:     logger,
 		byKey:      make(map[string]entry),
 		expiryHeap: ttlcache.NewExpiryHeap(),
-		idleTTL:    20 * time.Minute,
+		idleTTL:    5 * time.Minute, // 20 minutes default idle TTL
 	}
 }
 

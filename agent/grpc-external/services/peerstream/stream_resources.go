@@ -306,10 +306,14 @@ func (s *Server) HandleStream(streamReq HandleStreamRequest) error {
 	s.Logger.Debug("dio.test: starting HandleStream for", streamReq.PeerName)
 	if err := s.realHandleStream(streamReq); err != nil {
 		s.Tracker.DisconnectedDueToError(streamReq.LocalID, err.Error())
-		s.Logger.Error("dio.test: error handling stream", "peer_name", streamReq.PeerName, "peer_id", streamReq.LocalID, "error", err)
+		s.Logger.Error("dio.test: error handling stream, deleting local peer", "peer_name", streamReq.PeerName, "peer_id", streamReq.LocalID, "error", err)
+		currentStatus, found := s.Tracker.StreamStatus(streamReq.LocalID)
+		if found && currentStatus.Connected {
+			s.Logger.Info("dio.test: marking peer as disconnected due to error", "peer_name", streamReq.PeerName, "peer_id", streamReq.LocalID)
+			s.Tracker.DeleteStatus(streamReq.LocalID)
+		}
 		return err
 	}
-	// TODO(peering) Also need to clear subscriptions associated with the peer
 	s.Tracker.DisconnectedGracefully(streamReq.LocalID)
 	return nil
 }
