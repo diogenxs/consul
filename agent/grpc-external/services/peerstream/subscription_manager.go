@@ -492,7 +492,7 @@ func (m *subscriptionManager) syncDiscoveryChains(
 		}
 
 		state.connectServices[chainName] = info
-
+		m.logger.Debug("dio.test.subscriptions: syncing discovery chain for peer, syncDiscoveryChains", "service", chainName.String())
 		m.collectPendingEventForDiscoveryChain(state, pending, chainName, info)
 	}
 
@@ -530,13 +530,14 @@ func (m *subscriptionManager) collectPendingEventForDiscoveryChain(
 		return // not found
 	}
 
-	if state.exportList == nil || state.meshGateway == nil {
+	if state.exportList == nil || state.meshGateway == nil || len(state.meshGateway.Nodes) == 0 {
+		m.logger.Debug("dio.test.subscriptions: skipping pending event for discovery chain, missing data", "meshgatewaynodes", len(state.meshGateway.Nodes))
 		return // skip because we don't have the data to do it yet
 	}
 
 	// Emit event with fake data
 	proxyName := generateProxyNameForDiscoveryChain(chainName)
-
+	m.logger.Debug("dio.test.subscriptions: generating synthetic discovery chain service for peer, collectPendingEventForDiscoveryChain")
 	err := pending.Add(
 		discoveryChainPayloadIDPrefix+chainName.String(),
 		subExportedService+proxyName.String(),
