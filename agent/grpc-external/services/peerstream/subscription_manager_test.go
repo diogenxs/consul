@@ -1329,3 +1329,86 @@ func (m *mockSnapshotHandler) expect(token string, requestIndex uint64, eventInd
 		})
 	}).Return(eventIndex, nil)
 }
+
+func TestSubscriptionManager_SidecarProxyFiltering(t *testing.T) {
+	backend := newTestSubscriptionBackend(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a peering
+	_, _ = backend.ensurePeering(t, "my-peering")
+	partition := acl.DefaultEnterpriseMeta().PartitionOrEmpty()
+
+	mgr := newSubscriptionManager(ctx, testutil.Logger(t), Config{
+		Datacenter:     "dc1",
+		ConnectEnabled: true,
+	}, connect.TestTrustDomain, backend, func() StateStore {
+		return backend.store
+	}, nil)
+
+	updateCh := make(chan cache.UpdateEvent, 100)
+	publicUpdateCh := make(chan cache.UpdateEvent, 100)
+
+	state := newSubscriptionState("peer", partition)
+	state.updateCh = updateCh
+	state.publicUpdateCh = publicUpdateCh
+
+	subCtx, subCancel := context.WithCancel(ctx)
+	defer subCancel()
+
+	// Start subscription
+	go mgr.handleEvents(subCtx, state, updateCh)
+
+	// Test 1: Regular service should be processed
+	regularEvent := cache.UpdateEvent{
+		CorrelationID: subExportedService + "web",
+		Result: &pbservice.IndexedCheckServiceNodes{
+			Index: 1,
+			Nodes: []*pbservice.CheckServiceNode{
+				{
+					Node:    &pbservice.Node{Node: "node1"},
+					Service: &pbservice.NodeService{ID: "web", Service: "web"},
+				},
+			},
+		},
+	}
+
+	// Test 2: Sidecar proxy should be filtered
+	sidecarEvent := cache.UpdateEvent{
+		CorrelationID: subExportedService + "web" + structs.SidecarProxySuffix,
+		Result: &pbservice.IndexedCheckServiceNodes{
+			Index: 1,
+			Nodes: []*pbservice.CheckServiceNode{
+				{
+					Node:    &pbservice.Node{Node: "node1"},
+					Service: &pbservice.NodeService{ID: "web-sidecar-proxy", Service: "web-sidecar-proxy"},
+				},
+			},
+		},
+	}
+
+	// Send events
+	updateCh <- regularEvent
+	updateCh <- sidecarEvent
+
+	// Collect results from public channel
+	var results []cache.UpdateEvent
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case evt := <-publicUpdateCh:
+				results = append(results, evt)
+			case <-time.After(100 * time.Millisecond):
+				close(done)
+				return
+			}
+		}
+	}()
+
+	<-done
+
+	// Only regular service should be processed, sidecar should be filtered
+	require.Len(t, results, 1, "sidecar proxy events should be filtered out")
+	require.Equal(t, subExportedService+"web", results[0].CorrelationID)
+}

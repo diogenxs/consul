@@ -161,6 +161,15 @@ func (m *subscriptionManager) handleEvent(ctx context.Context, state *subscripti
 		state.cleanupEventVersions(m.logger)
 
 	case strings.HasPrefix(u.CorrelationID, subExportedService):
+		// Skip sidecar proxy service events to prevent event storms.
+		// Sidecar proxies generate excessive duplicate events due to hash calculation issues.
+		serviceName := strings.TrimPrefix(u.CorrelationID, subExportedService)
+		if strings.HasSuffix(serviceName, structs.SidecarProxySuffix) {
+			m.logger.Debug("skipping sidecar proxy service event for peer streaming",
+				"correlationID", u.CorrelationID, "service", serviceName)
+			return nil
+		}
+
 		csn, ok := u.Result.(*pbservice.IndexedCheckServiceNodes)
 		if !ok {
 			return fmt.Errorf("invalid type for response: %T", u.Result)
@@ -447,7 +456,9 @@ func (m *subscriptionManager) syncNormalServices(
 	// seen contains the set of exported service names and is used to reconcile the list of watched services.
 	seen := make(map[structs.ServiceName]struct{})
 
-	// Ensure there is a subscription for each service exported to the peer.
+	// Ensure there is a subscription for each service exported to the peer
+	// but exclude sidecar proxies from the exported service list processing
+	// to prevent event storms when any service changes.
 	for _, svc := range services {
 		seen[svc] = struct{}{}
 
