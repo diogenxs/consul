@@ -502,6 +502,7 @@ func (c *CheckHTTP) check() {
 
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		// PASSING (2xx)
+		result := fmt.Sprintf("HTTP %s %s: %s", method, target, resp.Status)
 		c.StatusHandler.updateCheck(c.CheckID, api.HealthPassing, result)
 	} else if resp.StatusCode == 429 {
 		// WARNING

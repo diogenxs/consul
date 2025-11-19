@@ -125,23 +125,11 @@ func (s *Server) emitPeeringMetricsOnce(metricsImpl *metrics.Metrics) error {
 
 		// peering health metric
 		healthy := 0
-		healthReport := "never connected"
-		if !status.NeverConnected {
-			healthReport = s.peerStreamServer.Tracker.HealthReport(status)
-			if s.peerStreamServer.Tracker.IsHealthy(status) {
-				healthy = 1
-			}
+		switch {
+		case status.NeverConnected:
+		case s.peerStreamServer.Tracker.IsHealthy(status):
+			healthy = 1
 		}
-
-		// Log unhealthy peerings for diagnostics
-		if healthy == 0 && !status.NeverConnected {
-			s.logger.Warn("peering marked as unhealthy",
-				"peer_name", peer.Name,
-				"peer_id", peer.ID,
-				"health_report", healthReport,
-			)
-		}
-
 		metricsImpl.SetGaugeWithLabels(leaderHealthyPeeringKeyDeprecated, float32(healthy), labels)
 		metricsImpl.SetGaugeWithLabels(leaderHealthyPeeringKey, float32(healthy), labels)
 	}
@@ -339,7 +327,7 @@ func (s *Server) establishStream(ctx context.Context,
 
 	logger.Trace("establishing stream to peer")
 
-	_, err = s.peerStreamServer.Tracker.Register(peer.ID)
+	streamStatus, err := s.peerStreamServer.Tracker.Register(peer.ID)
 	if err != nil {
 		return fmt.Errorf("failed to register stream: %v", err)
 	}
@@ -367,14 +355,14 @@ func (s *Server) establishStream(ctx context.Context,
 			//				  This should wait until the grpc-external server is wired up with a stats handler in NET-50.
 			// For keep alive parameters there is a larger comment in ClientConnPool.dial about that.
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
-				Time:    10 * time.Second,
-				Timeout: 30 * time.Second,
+				Time:    30 * time.Second,
+				Timeout: 10 * time.Second,
 				// send keepalive pings even if there is no active streams
 				PermitWithoutStream: true,
 			}),
 			grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(8*1024*1024), grpc.MaxCallRecvMsgSize(8*1024*1024)),
 		}
-		logger.Info("dio.test: dialing peer", "addr", addr, "peer_name", peer.Name, "peer_id", peer.ID)
+
 		logger.Trace("dialing peer", "addr", addr)
 		conn, err := grpc.DialContext(streamCtx, addr, opts...)
 
@@ -404,7 +392,7 @@ func (s *Server) establishStream(ctx context.Context,
 		if err := stream.Send(initialReq); err != nil {
 			return fmt.Errorf("failed to send initial stream request: %w", err)
 		}
-		logger.Debug("dio.test: starting outbound stream to peer", peer.Name)
+
 		streamReq := peerstream.HandleStreamRequest{
 			LocalID:   peer.ID,
 			RemoteID:  peer.PeerID,
@@ -413,7 +401,6 @@ func (s *Server) establishStream(ctx context.Context,
 			Stream:    stream,
 		}
 		err = s.peerStreamServer.HandleStream(streamReq)
-		logger.Error("dio.test: outbound stream to peer ended", peer.Name, "error", err)
 		// A nil error indicates that the peering was deleted and the stream needs to be gracefully shutdown.
 		if err == nil {
 			stream.CloseSend()
@@ -424,24 +411,23 @@ func (s *Server) establishStream(ctx context.Context,
 		return err
 
 	}, func(err error) {
-		logger.Info("dio.test: stream to peer ended, will retry", "error", err)
-		// Note: Don't track error here - it's already tracked inside realHandleStream() with the correct type
-		// (TrackSendError vs TrackRecvError depending on whether it was a send or receive error)
+		// TODO(peering): why are we using TrackSendError here? This could also be a receive error.
+		streamStatus.TrackSendError(err.Error())
 
 		switch {
 		case isErrCode(err, codes.FailedPrecondition):
-			logger.Error("dio.test: stream disconnected due to 'failed precondition' error; reconnecting",
+			logger.Debug("stream disconnected due to 'failed precondition' error; reconnecting",
 				"error", err)
 
 		case isErrCode(err, codes.ResourceExhausted):
-			logger.Error("dio.test: stream disconnected due to 'resource exhausted' error; reconnecting",
+			logger.Debug("stream disconnected due to 'resource exhausted' error; reconnecting",
 				"error", err)
 
 		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-			logger.Error("dio.test: stream context was canceled", "error", err)
+			logger.Debug("stream context was canceled", "error", err)
 
 		case err != nil:
-			logger.Error("dio.test: error managing peering stream", "error", err)
+			logger.Error("error managing peering stream", "error", err)
 		}
 	}, peeringRetryTimeout)
 
@@ -676,30 +662,25 @@ func retryLoopBackoffPeering(ctx context.Context, logger hclog.Logger, loopFn fu
 	var failedAttempts uint
 	var err error
 	for {
-		logger.Debug("dio.test: peering connection retry loop starting iteration starting")
 		if err = loopFn(); err != nil {
 			errFn(err)
 
 			if failedAttempts < math.MaxUint {
 				failedAttempts++
 			}
-			logger.Debug("dio.test: peering connection retry loop starting iteration", "attempt", failedAttempts, "error", err)
 
 			retryTime := retryTimeFn(failedAttempts, err)
-			logger.Debug("dio.test: peering connection will retry", "attempt", failedAttempts, "retry_time", retryTime, "error", err)
 			logger.Trace("in connection retry backoff", "delay", retryTime)
 			timer := time.NewTimer(retryTime)
 
 			select {
 			case <-ctx.Done():
-				logger.Debug("dio.test: peering connection retry loop exiting due to context cancellation")
 				timer.Stop()
 				return
 			case <-timer.C:
 			}
 			continue
 		}
-		logger.Debug("dio.test: peering connection retry loop exiting after successful iteration, iteration", "attempt", failedAttempts)
 		return
 	}
 }
