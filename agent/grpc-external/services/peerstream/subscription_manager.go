@@ -148,6 +148,7 @@ func (m *subscriptionManager) handleEvent(ctx context.Context, state *subscripti
 		pending := &pendingPayload{}
 		m.syncNormalServices(ctx, state, evt.Services)
 		if m.config.ConnectEnabled {
+			m.logger.Debug("dio.test.subscriptions: syncing discovery chains for peer", "count", len(evt.DiscoChains))
 			m.syncDiscoveryChains(state, pending, evt.DiscoChains)
 		}
 
@@ -223,6 +224,11 @@ func (m *subscriptionManager) handleEvent(ctx context.Context, state *subscripti
 			return nil // ignore event
 		}
 
+		if len(csn.Nodes) == 0 {
+			m.logger.Debug("dio.test.subscriptions: received empty mesh gateway list for partition, ignoring", "partition", partition)
+			return nil // nothing to do
+		}
+
 		// Clear this raft index before exporting.
 		csn.Index = 0
 
@@ -260,6 +266,7 @@ func (m *subscriptionManager) handleEvent(ctx context.Context, state *subscripti
 		if state.exportList != nil {
 			// Trigger public events for all synthetic discovery chain replies.
 			for chainName, info := range state.connectServices {
+				m.logger.Debug("dio.test.subscriptions: generating synthetic discovery chain service for peer, handleEvent -> meshGateway update", "service", chainName.String())
 				m.collectPendingEventForDiscoveryChain(state, pending, chainName, info)
 			}
 		}
