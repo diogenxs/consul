@@ -501,11 +501,11 @@ func (c *CheckHTTP) check() {
 	}
 
 	// Format the response body
-	// result := fmt.Sprintf("HTTP %s %s: %s Output: %s", method, target, resp.Status, output.String())
-	result := fmt.Sprintf("HTTP %s %s: %s", method, target, resp.Status)
+	result := fmt.Sprintf("HTTP %s %s: %s Output: %s", method, target, resp.Status, output.String())
 
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		// PASSING (2xx)
+		result := fmt.Sprintf("HTTP %s %s: %s", method, target, resp.Status)
 		c.StatusHandler.updateCheck(c.CheckID, api.HealthPassing, result)
 	} else if resp.StatusCode == 429 {
 		// WARNING
