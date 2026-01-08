@@ -109,7 +109,11 @@ func (s *Server) emitPeeringMetricsOnce(metricsImpl *metrics.Metrics) error {
 		return err
 	}
 
+	s.logger.Trace("dio.test emitPeeringMetricsOnce: starting metric emission", "peer_count", len(peers))
+
 	for _, peer := range peers {
+		s.logger.Trace("dio.test emitPeeringMetricsOnce: processing peer", "peer_name", peer.Name, "peer_id", peer.ID)
+
 		part := peer.Partition
 		labels := []metrics.Label{
 			{Name: "peer_name", Value: peer.Name},
@@ -120,6 +124,18 @@ func (s *Server) emitPeeringMetricsOnce(metricsImpl *metrics.Metrics) error {
 		}
 
 		status, found := s.peerStreamServer.StreamStatus(peer.ID)
+		s.logger.Trace("dio.test emitPeeringMetricsOnce: stream status lookup",
+			"peer_name", peer.Name,
+			"peer_id", peer.ID,
+			"found", found,
+			"connected", status.Connected,
+			"never_connected", status.NeverConnected,
+			"disconnect_time", status.DisconnectTime,
+			"last_recv_error", status.LastRecvError,
+			"last_nack", status.LastNack,
+			"last_ack", status.LastAck,
+		)
+
 		if found {
 			// exported services count metric
 			esc := status.GetExportedServicesCount()
@@ -129,14 +145,25 @@ func (s *Server) emitPeeringMetricsOnce(metricsImpl *metrics.Metrics) error {
 
 		// peering health metric
 		healthy := 0
+		isHealthy := s.peerStreamServer.Tracker.IsHealthy(status)
+		s.logger.Trace("dio.test emitPeeringMetricsOnce: health check result",
+			"peer_name", peer.Name,
+			"peer_id", peer.ID,
+			"is_healthy", isHealthy,
+		)
+
 		switch {
 		case status.NeverConnected:
-		case s.peerStreamServer.Tracker.IsHealthy(status):
+			s.logger.Trace("dio.test emitPeeringMetricsOnce: peer never connected", "peer_name", peer.Name)
+		case isHealthy:
 			healthy = 1
+		default:
+			s.logger.Warn("peering is unhealthy", "peer_name", peer.Name, "peer_id", peer.ID)
 		}
 		metricsImpl.SetGaugeWithLabels(leaderHealthyPeeringKeyDeprecated, float32(healthy), labels)
 		metricsImpl.SetGaugeWithLabels(leaderHealthyPeeringKey, float32(healthy), labels)
 	}
+	s.logger.Trace("dio.test emitPeeringMetricsOnce: finished metric emission")
 
 	return nil
 }
