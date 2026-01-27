@@ -169,8 +169,9 @@ export default class PermissionService extends RepositoryService {
     // still enforced on the backend.
     // This temporary measure should be removed again once https://github.com/hashicorp/consul/issues/11098
     // has been resolved
+    // Enhanced fallback for 1.22.x sidebar timing issues
     this.permissions.forEach((item) => {
-      if (['key', 'node', 'service', 'intention', 'session'].includes(item.Resource)) {
+      if (['key', 'node', 'service', 'intention', 'session', 'overview'].includes(item.Resource)) {
         item.Allow = true;
       }
     });
