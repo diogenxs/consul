@@ -61,6 +61,10 @@ const REQUIRED_PERMISSIONS = [
     Resource: 'acl',
     Access: 'write',
   },
+  {
+    Resource: 'zervice',
+    Access: 'read',
+  },
 ];
 const PEERING_PERMISSIONS = [
   {
@@ -171,7 +175,7 @@ export default class PermissionService extends RepositoryService {
     // has been resolved
     // Enhanced fallback for 1.22.x sidebar timing issues
     this.permissions.forEach((item) => {
-      if (['key', 'node', 'service', 'intention', 'session', 'overview'].includes(item.Resource)) {
+      if (['key', 'kv', 'node', 'zervice', 'intention', 'session', 'operator'].includes(item.Resource)) {
         item.Allow = true;
       }
     });
