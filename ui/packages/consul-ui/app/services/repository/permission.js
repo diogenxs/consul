@@ -61,10 +61,6 @@ const REQUIRED_PERMISSIONS = [
     Resource: 'acl',
     Access: 'write',
   },
-  {
-    Resource: 'zervice',
-    Access: 'read',
-  },
 ];
 const PEERING_PERMISSIONS = [
   {
@@ -174,8 +170,12 @@ export default class PermissionService extends RepositoryService {
     // This temporary measure should be removed again once https://github.com/hashicorp/consul/issues/11098
     // has been resolved
     // Enhanced fallback for 1.22.x sidebar timing issues
+    // NOTE: Use actual backend resource names, not ability names:
+    // - 'service' (not 'zervice' - ability name differs from resource)
+    // - 'key' (not 'kv' - ability name differs from resource)  
+    // - 'operator' (for overview ability which uses operator resource)
     this.permissions.forEach((item) => {
-      if (['key', 'kv', 'node', 'zervice', 'intention', 'session', 'operator'].includes(item.Resource)) {
+      if (['key', 'node', 'service', 'intention', 'session', 'operator'].includes(item.Resource)) {
         item.Allow = true;
       }
     });
