@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-memdb"
+	uuid "github.com/hashicorp/go-uuid"
 
 	"github.com/hashicorp/consul/acl"
 	"github.com/hashicorp/consul/agent/structs"
@@ -22,6 +23,16 @@ func (s *Snapshot) ACLTokens() (memdb.ResultIterator, error) {
 
 // ACLToken is used when restoring from a snapshot. For general inserts, use ACL.
 func (s *Restore) ACLToken(token *structs.ACLToken) error {
+	// Handle legacy tokens from pre-1.4 clusters that may not have an AccessorID.
+	// Without this, snapshot restore from 1.14.x to 1.15.x fails because the
+	// memdb schema in 1.15+ requires a non-empty accessor index.
+	if token.AccessorID == "" {
+		id, err := uuid.GenerateUUID()
+		if err != nil {
+			return fmt.Errorf("failed to generate accessor ID for legacy token: %v", err)
+		}
+		token.AccessorID = id
+	}
 	return aclTokenInsert(s.tx, token)
 }
 
