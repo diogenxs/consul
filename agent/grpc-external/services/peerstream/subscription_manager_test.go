@@ -921,7 +921,7 @@ func TestFlattenChecks(t *testing.T) {
 					Status:  api.HealthPassing,
 				},
 			},
-			expect: api.HealthMaint,
+			expect: api.HealthCritical,
 		},
 		"service_maintenance": {
 			checks: []*pbservice.HealthCheck{
@@ -930,7 +930,7 @@ func TestFlattenChecks(t *testing.T) {
 					Status:  api.HealthPassing,
 				},
 			},
-			expect: api.HealthMaint,
+			expect: api.HealthCritical,
 		},
 		"unknown": {
 			checks: []*pbservice.HealthCheck{
@@ -952,7 +952,7 @@ func TestFlattenChecks(t *testing.T) {
 					Status:  api.HealthCritical,
 				},
 			},
-			expect: api.HealthMaint,
+			expect: api.HealthCritical,
 		},
 		"critical_over_warning": {
 			checks: []*pbservice.HealthCheck{
