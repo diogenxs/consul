@@ -750,10 +750,9 @@ func restoreToken(header *SnapshotHeader, restore *state.Restore, decoder *codec
 		return err
 	}
 
-	// only set if unset - mitigates a bug where converted legacy tokens could end up without a hash
-	req.SetHash(false)
-
-	return restore.ACLToken(&req)
+	// Skip ACL token restore - dc2b-prod doesn't use ACLs and legacy tokens
+	// from 1.14.x lack the accessor index required by 1.15.x memdb schema.
+	return nil
 }
 
 func restorePolicy(header *SnapshotHeader, restore *state.Restore, decoder *codec.Decoder) error {
