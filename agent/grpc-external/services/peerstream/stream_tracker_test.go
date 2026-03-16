@@ -101,7 +101,7 @@ func TestTracker_IsHealthy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tracker := tc.tracker
 
-			st, err := tracker.Connected(aPeerID)
+			st, _, err := tracker.Connected(aPeerID)
 			require.NoError(t, err)
 			require.True(t, st.Connected)
 
@@ -128,8 +128,9 @@ func TestTracker_EnsureConnectedDisconnected(t *testing.T) {
 		err       error
 	)
 
+	var gen uint64
 	testutil.RunStep(t, "new stream", func(t *testing.T) {
-		statusPtr, err = tracker.Connected(peerID)
+		statusPtr, gen, err = tracker.Connected(peerID)
 		require.NoError(t, err)
 
 		expect := Status{
@@ -142,7 +143,7 @@ func TestTracker_EnsureConnectedDisconnected(t *testing.T) {
 	})
 
 	testutil.RunStep(t, "duplicate gets rejected", func(t *testing.T) {
-		_, err := tracker.Connected(peerID)
+		_, _, err := tracker.Connected(peerID)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), `there is an active stream for the given PeerID "63b60245-c475-426b-b314-4588d210859d"`)
 	})
@@ -166,7 +167,7 @@ func TestTracker_EnsureConnectedDisconnected(t *testing.T) {
 	})
 
 	testutil.RunStep(t, "disconnect", func(t *testing.T) {
-		tracker.DisconnectedGracefully(peerID)
+		tracker.DisconnectedGracefully(peerID, gen)
 		sequence++
 
 		expect := Status{
@@ -180,13 +181,12 @@ func TestTracker_EnsureConnectedDisconnected(t *testing.T) {
 	})
 
 	testutil.RunStep(t, "re-connect", func(t *testing.T) {
-		_, err := tracker.Connected(peerID)
+		_, _, err := tracker.Connected(peerID)
 		require.NoError(t, err)
 
 		expect := Status{
-			Connected:      true,
-			LastAck:        lastSuccess,
-			DisconnectTime: &time.Time{},
+			Connected: true,
+			LastAck:   lastSuccess,
 			// DisconnectTime gets cleared on re-connect.
 		}
 
@@ -236,10 +236,10 @@ func TestTracker_connectedStreams(t *testing.T) {
 		{
 			name: "all streams active",
 			setup: func(t *testing.T, s *Tracker) {
-				_, err := s.Connected("foo")
+				_, _, err := s.Connected("foo")
 				require.NoError(t, err)
 
-				_, err = s.Connected("bar")
+				_, _, err = s.Connected("bar")
 				require.NoError(t, err)
 			},
 			expect: []string{"bar", "foo"},
@@ -247,13 +247,13 @@ func TestTracker_connectedStreams(t *testing.T) {
 		{
 			name: "mixed active and inactive",
 			setup: func(t *testing.T, s *Tracker) {
-				status, err := s.Connected("foo")
+				status, _, err := s.Connected("foo")
 				require.NoError(t, err)
 
 				// Mark foo as disconnected to avoid showing it as an active stream
 				status.TrackDisconnectedGracefully()
 
-				_, err = s.Connected("bar")
+				_, _, err = s.Connected("bar")
 				require.NoError(t, err)
 			},
 			expect: []string{"bar"},
@@ -275,12 +275,13 @@ func TestMutableStatus_TrackConnected(t *testing.T) {
 			DisconnectErrorMessage: "disconnected",
 		},
 	}
-	s.TrackConnected()
+	gen := s.TrackConnected()
 
 	require.True(t, s.IsConnected())
 	require.True(t, s.Connected)
-	require.Equal(t, &time.Time{}, s.DisconnectTime)
+	require.Nil(t, s.DisconnectTime)
 	require.Empty(t, s.DisconnectErrorMessage)
+	require.Equal(t, uint64(1), gen)
 }
 
 func TestMutableStatus_TrackDisconnectedGracefully(t *testing.T) {
