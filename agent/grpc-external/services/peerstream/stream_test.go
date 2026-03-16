@@ -1590,7 +1590,7 @@ func Test_ExportedServicesCount(t *testing.T) {
 	}))
 
 	// connect the stream
-	mst, err := srv.Tracker.Connected(peerID)
+	mst, _, err := srv.Tracker.Connected(peerID)
 	require.NoError(t, err)
 
 	services := []string{
@@ -1633,7 +1633,7 @@ func Test_processResponse_Validation(t *testing.T) {
 	}))
 
 	// connect the stream
-	mst, err := srv.Tracker.Connected(peerID)
+	mst, _, err := srv.Tracker.Connected(peerID)
 	require.NoError(t, err)
 
 	run := func(t *testing.T, tc testCase) {
@@ -1969,7 +1969,7 @@ func processResponse_ExportedServiceUpdates(
 	}))
 
 	// connect the stream
-	mst, err := srv.Tracker.Connected(peerID)
+	mst, _, err := srv.Tracker.Connected(peerID)
 	require.NoError(t, err)
 
 	run := func(t *testing.T, tc PeeringProcessResponse_testCase) {
