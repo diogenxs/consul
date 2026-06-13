@@ -413,14 +413,19 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 
 	// streamSend is a helper function that queues msg to be sent over the stream.
 	// It accepts a context to allow the caller to control cancellation/timeout (e.g. heartbeat timeout).
+	// Send errors are only consumed by the main loop, which must own stream teardown.
 	streamSend := func(ctx context.Context, msg *pbpeerstream.ReplicationMessage) error {
+		if err := handleStreamCtx.Err(); err != nil {
+			return err
+		}
+
 		select {
 		case sendCh <- msg:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-sendErrCh:
-			return err
+		case <-handleStreamCtx.Done():
+			return handleStreamCtx.Err()
 		}
 	}
 
