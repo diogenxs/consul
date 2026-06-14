@@ -356,7 +356,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 
 	remoteSubTracker := newResourceSubscriptionTracker()
 	mgr := newSubscriptionManager(
-		streamReq.Stream.Context(),
+		handleStreamCtx,
 		logger,
 		s.Config,
 		trustDomain,
@@ -364,7 +364,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 		s.GetStore,
 		remoteSubTracker,
 	)
-	subCh := mgr.subscribe(streamReq.Stream.Context(), streamReq.LocalID, streamReq.PeerName, streamReq.Partition)
+	subCh := mgr.subscribe(handleStreamCtx, streamReq.LocalID, streamReq.PeerName, streamReq.Partition)
 
 	// sendCh is used to queue messages to be sent to the stream.
 	// We buffer this to prevent the main loop from blocking on sends, which could lead to deadlocks
