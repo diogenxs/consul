@@ -324,7 +324,8 @@ func (s *MutableStatus) TrackNack(msg string) {
 func (s *MutableStatus) TrackConnected() {
 	s.mu.Lock()
 	s.Connected = true
-	s.DisconnectTime = &time.Time{}
+	s.NeverConnected = false
+	s.DisconnectTime = nil
 	s.DisconnectErrorMessage = ""
 	s.mu.Unlock()
 }

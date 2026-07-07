@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/hashicorp/consul/agent/cache"
 	"github.com/hashicorp/consul/agent/connect"
 	external "github.com/hashicorp/consul/agent/grpc-external"
 	"github.com/hashicorp/consul/agent/structs"
@@ -492,11 +493,28 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 	// The nonce is used to correlate response/(ack|nack) pairs.
 	var nonce uint64
 
+	// pendingUpdateMsg holds a replication message that is waiting to be sent to sendCh.
+	// This is used to implement backpressure on subCh.
+	var pendingUpdateMsg *pbpeerstream.ReplicationMessage
+
 	// The main loop that processes sends and receives.
+	logger.Debug("dio.test: [Step 8/10] entering main loop")
 	for {
+		// Determine if we should be reading from subCh or writing to sendCh
+		var subChSelect <-chan cache.UpdateEvent
+		if pendingUpdateMsg == nil {
+			subChSelect = subCh
+		}
+
+		var sendChSelect chan<- *pbpeerstream.ReplicationMessage
+		if pendingUpdateMsg != nil {
+			sendChSelect = sendCh
+		}
+
 		select {
 		// When the doneCh is closed that means that the peering was deleted locally.
 		case <-status.Done():
+			logger.Debug("dio.test: status.Done() received, ending stream")
 			logger.Info("ending stream")
 
 			term := &pbpeerstream.ReplicationMessage{
@@ -654,24 +672,32 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 				}
 
 				// We are replying ACK or NACK depending on whether we successfully processed the response.
-				if err := streamSend(incomingHeartbeatCtx, reply); err != nil {
-					return fmt.Errorf("failed to send to stream: %v", err)
-				}
+				// We launch a goroutine to send the reply to avoid blocking the main loop if sendCh is full.
+				// This prevents deadlock where we can't read because we can't send.
+				go func() {
+					if err := streamSend(incomingHeartbeatCtx, reply); err != nil {
+						logger.Error("dio.test: failed to send to stream", "reply", reply, "error", err)
+					}
+				}()
 
 				continue
 			}
 
 			if term := msg.GetTerminated(); term != nil {
+				logger.Debug("dio.test: received termination message from peer")
 				logger.Info("peering was deleted by our peer: marking peering as terminated and cleaning up imported resources")
 
 				// Once marked as terminated, a separate deferred deletion routine will clean up imported resources.
 				if err := s.Backend.PeeringTerminateByID(&pbpeering.PeeringTerminateByIDRequest{ID: streamReq.LocalID}); err != nil {
+					logger.Error("dio.test: failed to mark peering as terminated", "error", err)
 					logger.Error("failed to mark peering as terminated: %w", err)
 				}
+				logger.Debug("dio.test: peering marked as terminated, returning")
 				return nil
 			}
 
 			if msg.GetHeartbeat() != nil {
+				logger.Trace("dio.test: received heartbeat from peer")
 				status.TrackRecvHeartbeat()
 
 				// Reset the heartbeat timeout by creating a new context.
@@ -687,44 +713,55 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 					context.WithTimeout(context.Background(), s.incomingHeartbeatTimeout)
 			}
 
-		case update := <-subCh:
+		case update := <-subChSelect:
+			logger.Debug("dio.test: [Step 10/10] received subscription update", "correlationID", update.CorrelationID)
 			var resp *pbpeerstream.ReplicationMessage_Response
 			switch {
 			case strings.HasPrefix(update.CorrelationID, subExportedServiceList):
+				logger.Debug("dio.test: processing exported service list update")
 				resp, err = makeExportedServiceListResponse(status, update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
+					logger.Error("dio.test: failed to create exported service list response", "error", err)
 					logger.Error("failed to create exported service list response", "error", err)
 					continue
 				}
 			case strings.HasPrefix(update.CorrelationID, subExportedService):
+				logger.Debug("dio.test: processing exported service update")
 				resp, err = makeServiceResponse(update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
+					logger.Error("dio.test: failed to create service response", "error", err)
 					logger.Error("failed to create service response", "error", err)
 					continue
 				}
 
 			case update.CorrelationID == subCARoot:
+				logger.Debug("dio.test: processing CA roots update")
 				resp, err = makeCARootsResponse(update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
+					logger.Error("dio.test: failed to create ca roots response", "error", err)
 					logger.Error("failed to create ca roots response", "error", err)
 					continue
 				}
 
 			case update.CorrelationID == subServerAddrs:
+				logger.Debug("dio.test: processing server addresses update")
 				resp, err = makeServerAddrsResponse(update)
 				if err != nil {
+					logger.Error("dio.test: failed to create server address response", "error", err)
 					logger.Error("failed to create server address response", "error", err)
 					continue
 				}
 
 			default:
+				logger.Warn("dio.test: unrecognized update type from subscription manager: " + update.CorrelationID)
 				logger.Warn("unrecognized update type from subscription manager: " + update.CorrelationID)
 				continue
 			}
 			if resp == nil {
+				logger.Debug("dio.test: response is nil, skipping")
 				continue
 			}
 
@@ -732,11 +769,12 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) error {
 			nonce++
 			resp.Nonce = fmt.Sprintf("%08x", nonce)
 
-			replResp := makeReplicationResponse(resp)
-			if err := streamSend(incomingHeartbeatCtx, replResp); err != nil {
-				// note: govet warns of context leak but it is cleaned up in a defer
-				return fmt.Errorf("failed to push data for %q: %w", update.CorrelationID, err)
-			}
+			logger.Debug("dio.test: queuing replication response", "nonce", resp.Nonce, "correlationID", update.CorrelationID)
+			pendingUpdateMsg = makeReplicationResponse(resp)
+
+		case sendChSelect <- pendingUpdateMsg:
+			logger.Debug("dio.test: replication response queued successfully", "nonce", pendingUpdateMsg.GetResponse().Nonce)
+			pendingUpdateMsg = nil
 		}
 	}
 }
@@ -772,9 +810,9 @@ func logTraceSend(logger hclog.Logger, pb proto.Message) {
 }
 
 func logTraceProto(logger hclog.Logger, pb proto.Message, received bool) {
-	if !logger.IsTrace() {
-		return
-	}
+	// if !logger.IsTrace() {
+	// 	return
+	// }
 
 	dir := "sent"
 	if received {
@@ -811,7 +849,7 @@ func logTraceProto(logger hclog.Logger, pb proto.Message, received bool) {
 		out = string(outBytes)
 	}
 
-	logger.Trace("replication message", "direction", dir, "protobuf", out)
+	logger.Debug("replication message", "direction", dir, "protobuf", out)
 }
 
 // resourceSubscriptionTracker is used to keep track of the ResourceURLs that a
