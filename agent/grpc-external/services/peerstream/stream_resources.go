@@ -516,7 +516,6 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 	var pendingUpdateMsg *pbpeerstream.ReplicationMessage
 
 	// The main loop that processes sends and receives.
-	logger.Debug("dio.test: [Step 8/10] entering main loop")
 	for {
 		// Determine if we should be reading from subCh or writing to sendCh
 		var subChSelect <-chan cache.UpdateEvent
@@ -532,7 +531,6 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 		select {
 		// When the doneCh is closed that means that the peering was deleted locally.
 		case <-status.Done():
-			logger.Debug("dio.test: status.Done() received, ending stream")
 			logger.Info("ending stream")
 
 			term := &pbpeerstream.ReplicationMessage{
@@ -694,7 +692,7 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 				// This prevents deadlock where we can't read because we can't send.
 				go func() {
 					if err := streamSend(incomingHeartbeatCtx, reply); err != nil {
-						logger.Error("dio.test: failed to send to stream", "reply", reply, "error", err)
+						logger.Error("failed to send ack/nack reply to stream", "error", err)
 					}
 				}()
 
@@ -702,20 +700,16 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 			}
 
 			if term := msg.GetTerminated(); term != nil {
-				logger.Debug("dio.test: received termination message from peer")
 				logger.Info("peering was deleted by our peer: marking peering as terminated and cleaning up imported resources")
 
 				// Once marked as terminated, a separate deferred deletion routine will clean up imported resources.
 				if err := s.Backend.PeeringTerminateByID(&pbpeering.PeeringTerminateByIDRequest{ID: streamReq.LocalID}); err != nil {
-					logger.Error("dio.test: failed to mark peering as terminated", "error", err)
 					logger.Error("failed to mark peering as terminated: %w", err)
 				}
-				logger.Debug("dio.test: peering marked as terminated, returning")
 				return gen, true, nil
 			}
 
 			if msg.GetHeartbeat() != nil {
-				logger.Trace("dio.test: received heartbeat from peer")
 				status.TrackRecvHeartbeat()
 
 				// Reset the heartbeat timeout by creating a new context.
@@ -732,54 +726,43 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 			}
 
 		case update := <-subChSelect:
-			logger.Debug("dio.test: [Step 10/10] received subscription update", "correlationID", update.CorrelationID)
 			var resp *pbpeerstream.ReplicationMessage_Response
 			switch {
 			case strings.HasPrefix(update.CorrelationID, subExportedServiceList):
-				logger.Debug("dio.test: processing exported service list update")
 				resp, err = makeExportedServiceListResponse(status, update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
-					logger.Error("dio.test: failed to create exported service list response", "error", err)
 					logger.Error("failed to create exported service list response", "error", err)
 					continue
 				}
 			case strings.HasPrefix(update.CorrelationID, subExportedService):
-				logger.Debug("dio.test: processing exported service update")
 				resp, err = makeServiceResponse(update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
-					logger.Error("dio.test: failed to create service response", "error", err)
 					logger.Error("failed to create service response", "error", err)
 					continue
 				}
 
 			case update.CorrelationID == subCARoot:
-				logger.Debug("dio.test: processing CA roots update")
 				resp, err = makeCARootsResponse(update)
 				if err != nil {
 					// Log the error and skip this response to avoid locking up peering due to a bad update event.
-					logger.Error("dio.test: failed to create ca roots response", "error", err)
 					logger.Error("failed to create ca roots response", "error", err)
 					continue
 				}
 
 			case update.CorrelationID == subServerAddrs:
-				logger.Debug("dio.test: processing server addresses update")
 				resp, err = makeServerAddrsResponse(update)
 				if err != nil {
-					logger.Error("dio.test: failed to create server address response", "error", err)
 					logger.Error("failed to create server address response", "error", err)
 					continue
 				}
 
 			default:
-				logger.Warn("dio.test: unrecognized update type from subscription manager: " + update.CorrelationID)
 				logger.Warn("unrecognized update type from subscription manager: " + update.CorrelationID)
 				continue
 			}
 			if resp == nil {
-				logger.Debug("dio.test: response is nil, skipping")
 				continue
 			}
 
@@ -787,11 +770,9 @@ func (s *Server) realHandleStream(streamReq HandleStreamRequest) (uint64, bool, 
 			nonce++
 			resp.Nonce = fmt.Sprintf("%08x", nonce)
 
-			logger.Debug("dio.test: queuing replication response", "nonce", resp.Nonce, "correlationID", update.CorrelationID)
 			pendingUpdateMsg = makeReplicationResponse(resp)
 
 		case sendChSelect <- pendingUpdateMsg:
-			logger.Debug("dio.test: replication response queued successfully", "nonce", pendingUpdateMsg.GetResponse().Nonce)
 			pendingUpdateMsg = nil
 		}
 	}
